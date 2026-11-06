@@ -23,7 +23,7 @@ const BPS = 10_000n;
  *           and keeps it on offer for harbor masters.
  */
 export const ROLES = {
-  bob:   { role: 'canteen & bait shop', wants: { guppy: 0n, tilapia: 0n, tuna: 500n }, stocks: ['guppy', 'tilapia'] },
+  bob:   { role: 'canteen & bait shop', wants: { guppy: 0n, tilapia: 0n, tuna: 500n }, stocks: ['guppy', 'tilapia', 'tuna'] },
   alice: { role: 'collector',           wants: { snapper: 200n, koi: 500n },           stocks: ['koi', 'snapper'] },
   john:  { role: 'shipwright supplier', wants: { snapper: 300n },                      stocks: ['snapper'] },
 };
@@ -107,12 +107,24 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
   const spendable = (treasury * (BPS - p.reserveBps)) / BPS;
 
   // --- SELL: do we hold anything worth selling? -------------------------
-  for (const lot of npc.inventory) {
+  // One decision per fish, not per lot. Lots of the same fish bought at
+  // different prices share one ask, and the contract sells them oldest first
+  // (FIFO), so pricing from a single cheap lot could sell an older, dearer
+  // lot at a loss. The staple floor uses the dearest lot instead.
+  const byItem = new Map();
+  for (const l of npc.inventory) {
+    const cur = byItem.get(l.item_id) || { item_id: l.item_id, units: 0, cost: 0n, maxCost: 0n };
+    cur.units += Number(l.units);
+    cur.cost += BigInt(l.units) * BigInt(l.unit_cost);
+    if (BigInt(l.unit_cost) > cur.maxCost) cur.maxCost = BigInt(l.unit_cost);
+    byItem.set(l.item_id, cur);
+  }
+  for (const lot of byItem.values()) {
     const item = items.find((i) => i.id === lot.item_id);
-    if (!item) continue;
+    if (!item || lot.units === 0) continue;
 
     const fair = BigInt(fairPriceOf(item));
-    const avgCost = BigInt(lot.unit_cost);
+    const avgCost = lot.cost / BigInt(lot.units);
     const edgeBps =
       avgCost === 0n ? 0n : ((fair - avgCost) * BPS) / avgCost;
 
@@ -138,7 +150,7 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
       // ...but a staple never sells for less than cost plus the shop margin.
       if (staple) {
         const margin = shopMarginBps(stockOf(npc, lot.item_id), SHELF_CAP[npcId]?.[lot.item_id]);
-        const floor = (avgCost * (BPS + margin)) / BPS;
+        const floor = (lot.maxCost * (BPS + margin)) / BPS;
         if (ask < floor) ask = floor;
       }
       // An ask is a standing offer: a sale needs a player to pay it. If the
@@ -156,7 +168,7 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
         units,
         askPrice: ask,
         reason: staple
-          ? `shelf: ${lot.item_id} at ${ask} (cost ${avgCost} + margin)`
+          ? `shelf: ${lot.item_id} at ${ask} (dearest lot ${lot.maxCost} + margin)`
           : mustLiquidate
           ? `cutting a ${edgeBps}bps loss on ${lot.item_id} to free treasury`
           : `edge ${edgeBps}bps >= min ${p.minEdgeBps}bps on ${lot.item_id}`,

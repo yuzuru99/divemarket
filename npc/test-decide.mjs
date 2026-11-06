@@ -347,6 +347,35 @@ check(
   })()
 );
 check(
+  'lots bought at different prices share one ask, floored at the dearest lot (FIFO never sells at a loss)',
+  (() => {
+    const item = asItem('tilapia');
+    const fair = BigInt(fairPriceOf(item));
+    const dear = (fair * 11_000n) / 10_000n;
+    const cheap = (fair * 7_000n) / 10_000n;
+    const npc = { ...richNpc('bob'), inventory: [
+      { item_id: 'tilapia', units: 4, unit_cost: dear.toString() },
+      { item_id: 'tilapia', units: 9, unit_cost: cheap.toString() },
+    ], asks: [] };
+    const d = decideWithRoles('bob', npc, [item], []);
+    const first = d.action === 'SELL' && d.units === 13 && BigInt(d.askPrice) > dear;
+    // With that ask posted, the cheaper lot must not trigger a lower repost.
+    const again = decideWithRoles('bob', { ...npc, asks: [['tilapia', d.askPrice.toString()]] }, [item], []);
+    return first && again.action !== 'SELL';
+  })()
+);
+check(
+  'Bob keeps tuna he bought above fair on the shelf at a margin, instead of dumping it at a loss',
+  (() => {
+    const item = asItem('tuna');
+    const fair = BigInt(fairPriceOf(item));
+    const cost = (fair * 11_800n) / 10_000n;
+    const npc = { ...richNpc('bob'), inventory: [{ item_id: 'tuna', units: 3, unit_cost: cost.toString() }], asks: [] };
+    const d = decideWithRoles('bob', npc, [item], []);
+    return d.action === 'SELL' && BigInt(d.askPrice) > cost;
+  })()
+);
+check(
   'Alice shelves snapper too, so rod crafters can buy it',
   ROLES.alice.stocks.includes('snapper')
 );

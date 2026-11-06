@@ -261,12 +261,16 @@ async function tick(provider, npcId) {
   }
 
   // A market note on chain, from the NPC's own account, every 30-50 minutes.
-  const text = (brain.source === 'near-ai' && brain.plan?.note) || rulesNote(npcId, npc, season.name);
+  // With a NEAR AI key, the radio only carries the AI's notes: when a call
+  // fails, the last AI note stays up until the next one lands. Rule notes
+  // are only for running without a key.
+  const aiOn = !!apiKey();
+  const text = brain.source === 'near-ai' && brain.plan?.note ? brain.plan.note : aiOn ? null : rulesNote(npcId, npc, season.name);
   const last = notes[npcId];
-  if (!last || (Date.now() - last.at > last.gap && last.text !== text)) {
+  if (text && (!last || (Date.now() - last.at > last.gap && last.text !== text))) {
     console.log(`[${npcId}] NOTE (${brain.source}) ${text}`);
     await sendCall(provider, `${npcId}.${CONTRACT}`, signerFor(`${npcId}.${CONTRACT}`), 'npc_post_note',
-      { npc_id: npcId, text, source: brain.source }, '0');
+      { npc_id: npcId, text, source: aiOn ? 'near-ai' : brain.source }, '0');
     notes[npcId] = { at: Date.now(), gap: randomGap(), text };
     return;
   }

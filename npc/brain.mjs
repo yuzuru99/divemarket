@@ -96,6 +96,16 @@ export async function think(npcId, ctx) {
     fair_price_near: ctx.fair,
     default_plan: plansFor(npcId, ctx.season).map((p) => ({ fish: p.item, premium_bps: Number(p.premiumBps), units: p.units, standing: p.standing })),
   });
+  // Two tries: the model sometimes spends its whole budget reasoning and
+  // returns no answer, and a second ask usually lands.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const plan = await ask(npcId, key, system, user, allowed, attempt);
+    if (plan) return plan;
+  }
+  return null;
+}
+
+async function ask(npcId, key, system, user, allowed, attempt) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
   try {
@@ -105,7 +115,9 @@ export async function think(npcId, ctx) {
       body: JSON.stringify({
         model: MODEL,
         temperature: 0.4,
-        max_tokens: 1500,
+        max_tokens: 4000,
+        // GLM reasons before it answers; keep that short so the answer fits.
+        thinking: { type: 'disabled' },
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       }),
       signal: ctl.signal,
@@ -115,9 +127,14 @@ export async function think(npcId, ctx) {
       return null;
     }
     const json = await res.json();
-    return sanitizePlan(json.choices?.[0]?.message?.content || '', allowed);
+    const choice = json.choices?.[0];
+    const plan = sanitizePlan(choice?.message?.content || '', allowed);
+    if (!plan) {
+      console.log(`[${npcId}] NEAR AI gave no usable plan (try ${attempt}, finish ${choice?.finish_reason}, ${(choice?.message?.content || '').length} chars, ${json.usage?.completion_tokens} tokens)`);
+    }
+    return plan;
   } catch (e) {
-    console.log(`[${npcId}] NEAR AI unreachable: ${e.message}`);
+    console.log(`[${npcId}] NEAR AI unreachable (try ${attempt}): ${e.message}`);
     return null;
   } finally {
     clearTimeout(timer);
