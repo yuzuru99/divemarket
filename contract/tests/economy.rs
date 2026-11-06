@@ -2620,7 +2620,7 @@ fn bamboo_is_cheap_and_buy_only() {
     bamboo(&mut c, PLAYER);
     assert_eq!(c.vault_balance().0 - v0, ONE_NEAR / 10);
     assert_eq!(c.rods_of(PLAYER.parse().unwrap()), vec!["bamboo".to_string()]);
-    assert_eq!(left(&c, PLAYER, "bamboo"), 200);
+    assert_eq!(left(&c, PLAYER, "bamboo"), 100);
     testing_env!(ctx_at("other.near", T0));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.acquire_rod("bamboo".into(), true)));
     assert!(r.is_err(), "bamboo cannot be crafted");
@@ -2633,7 +2633,7 @@ fn rods_wear_per_fish_and_heavy_fish_wear_more() {
     bamboo(&mut c, PLAYER);
     testing_env!(ctx_pay(PLAYER, ONE_NEAR, T0));
     c.claim_catches(vec![rodded(PLAYER, "shallows", "guppy", "bamboo", 50), rodded(PLAYER, "shallows", "tuna", "bamboo", 5000)]);
-    assert_eq!(left(&c, PLAYER, "bamboo"), 200 - 1 - 3);
+    assert_eq!(left(&c, PLAYER, "bamboo"), 100 - 1 - 3);
 }
 
 #[test]
@@ -2664,15 +2664,15 @@ fn a_worn_out_rod_still_brings_the_catch_home_then_reads_zero() {
     let mut c = market();
     signer_on(&mut c);
     bamboo(&mut c, PLAYER);
-    // 67 tuna at 3 wear each is 201: one more than bamboo's 200.
+    // 34 tuna at 3 wear each is 102: two more than bamboo's 100.
     for chunk in 0..2 {
-        let n = if chunk == 0 { 40 } else { 27 };
+        let n = if chunk == 0 { 20 } else { 14 };
         let rs: Vec<CatchReceipt> = (0..n).map(|_| rodded(PLAYER, "shallows", "tuna", "bamboo", 5000)).collect();
         testing_env!(ctx_pay(PLAYER, ONE_NEAR, T0));
         c.claim_catches(rs);
     }
     assert_eq!(left(&c, PLAYER, "bamboo"), 0);
-    assert_eq!(c.holdings(PLAYER.parse().unwrap(), "tuna".into()), 67);
+    assert_eq!(c.holdings(PLAYER.parse().unwrap(), "tuna".into()), 34);
 }
 
 #[test]
@@ -2689,7 +2689,7 @@ fn repair_with_near_feeds_the_vault_and_the_tournament_pot() {
     let repair = 30 * ONE_NEAR / 1_000;
     assert_eq!(c.tournament(c.current_week()).pot.0 - pot0, repair * REPAIR_POT_BPS / 10_000);
     assert_eq!(c.vault_balance().0 - v0, repair - repair * REPAIR_POT_BPS / 10_000);
-    assert_eq!(left(&c, PLAYER, "bamboo"), 200);
+    assert_eq!(left(&c, PLAYER, "bamboo"), 100);
     assert!(c.solvency().solvent);
 }
 
@@ -2704,7 +2704,7 @@ fn repair_with_fish_burns_the_recipe() {
     testing_env!(ctx_at(PLAYER, T0));
     c.repair_rod("bamboo".into(), true);
     assert_eq!(c.holdings(PLAYER.parse().unwrap(), "guppy".into()), 0);
-    assert_eq!(left(&c, PLAYER, "bamboo"), 200);
+    assert_eq!(left(&c, PLAYER, "bamboo"), 100);
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.repair_rod("bamboo".into(), true)));
     assert!(r.is_err(), "nothing to repair");
 }
@@ -2737,7 +2737,7 @@ fn the_legendary_rod_crafts_once_the_requirements_are_met() {
     c.mount_trophy();
     c.acquire_rod("legendary".into(), true);
     assert!(c.rods_of(PLAYER.parse().unwrap()).contains(&"legendary".to_string()));
-    assert_eq!(left(&c, PLAYER, "legendary"), 1_000);
+    assert_eq!(left(&c, PLAYER, "legendary"), 600);
 }
 
 #[test]
@@ -2759,4 +2759,160 @@ fn the_owner_can_retune_a_license() {
     testing_env!(ctx(PLAYER));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.set_zone_fee("shallows".into(), U128(1))));
     assert!(r.is_err());
+}
+
+
+// ======================================================= surplus and notes
+
+#[test]
+fn the_vault_surplus_above_its_ceiling_goes_to_the_tournament_pot() {
+    let mut c = market();
+    testing_env!(ctx_pay(OWNER, 12 * ONE_NEAR, T0));
+    c.fund_vault(U128(0));
+    let v = c.vault_balance().0;
+    let week = c.current_week();
+    let pot0 = c.tournament(week).pot.0;
+    testing_env!(ctx_at(PLAYER, T0));
+    let moved = c.sweep_vault_surplus().0;
+    assert_eq!(moved, v - VAULT_CEILING);
+    assert_eq!(c.vault_balance().0, VAULT_CEILING, "the reserve stays");
+    assert_eq!(c.tournament(week).pot.0 - pot0, moved);
+    assert_eq!(c.sweep_vault_surplus().0, 0, "nothing left to sweep");
+    assert!(c.solvency().solvent);
+}
+
+#[test]
+fn a_thin_vault_has_no_surplus() {
+    let mut c = market();
+    testing_env!(ctx_at(PLAYER, T0));
+    let v = c.vault_balance().0;
+    assert_eq!(c.sweep_vault_surplus().0, 0);
+    assert_eq!(c.vault_balance().0, v);
+}
+
+#[test]
+fn only_the_npc_account_can_post_its_note() {
+    let mut c = market();
+    testing_env!(ctx_at("bob.owner.near", T0));
+    c.npc_post_note(BOB.into(), "Tuna run: paying 20% over fair for tuna.".into(), "near-ai".into());
+    let notes = c.npc_notes();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].npc_id, BOB);
+    assert_eq!(notes[0].source, "near-ai");
+    testing_env!(ctx_at(PLAYER, T0));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.npc_post_note(BOB.into(), "fake".into(), "rules".into())));
+    assert!(r.is_err(), "a player cannot speak for Bob");
+}
+
+#[test]
+fn notes_are_short_and_labelled() {
+    let mut c = market();
+    testing_env!(ctx_at("bob.owner.near", T0));
+    let long = "x".repeat(MAX_NOTE_CHARS + 1);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.npc_post_note(BOB.into(), long.clone(), "rules".into())));
+    assert!(r.is_err(), "too long");
+}
+
+#[test]
+fn a_note_needs_a_known_source() {
+    let mut c = market();
+    testing_env!(ctx_at("bob.owner.near", T0));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.npc_post_note(BOB.into(), "hi".into(), "oracle".into())));
+    assert!(r.is_err());
+}
+
+
+// ============================================================ P2P listings
+
+fn listed_by(c: &mut Contract, who: &str, item: &str, n: u64) -> u64 {
+    testing_env!(ctx_at(who, T0));
+    c.list_fair(item.into(), n);
+    c.open_listings().into_iter().filter(|(_, l)| l.seller.as_str() == who).map(|(i, _)| i).max().unwrap()
+}
+
+#[test]
+fn a_player_can_buy_another_players_listing() {
+    let mut c = market();
+    catch(&mut c, PLAYER, "snapper", 3);
+    let idx = listed_by(&mut c, PLAYER, "snapper", 3);
+    testing_env!(ctx_pay(BUYER, 50 * ONE_NEAR, T0 + 1));
+    c.buy_listing(idx, 2, U128(10 * PRICE_SCALE));
+    assert_eq!(c.holdings(BUYER.parse().unwrap(), "snapper".into()), 2);
+    let left = c.open_listings().into_iter().find(|(i, _)| *i == idx).map(|(_, l)| l.units);
+    assert_eq!(left, Some(1), "the listing shrinks");
+    assert_eq!(c.recent_trades(1)[0].kind, "p2p");
+}
+
+#[test]
+fn you_cannot_buy_your_own_listing() {
+    let mut c = market();
+    catch(&mut c, PLAYER, "snapper", 2);
+    let idx = listed_by(&mut c, PLAYER, "snapper", 2);
+    testing_env!(ctx_pay(PLAYER, ONE_NEAR, T0 + 1));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.buy_listing(idx, 1, U128(10 * PRICE_SCALE))));
+    assert!(r.is_err());
+}
+
+#[test]
+fn an_expired_listing_cannot_be_bought_by_a_player() {
+    let mut c = market();
+    catch(&mut c, PLAYER, "snapper", 2);
+    let idx = listed_by(&mut c, PLAYER, "snapper", 2);
+    testing_env!(ctx_pay(BUYER, ONE_NEAR, T0 + LISTING_TTL_SECONDS * 1_000_000_000 + 1));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.buy_listing(idx, 1, U128(10 * PRICE_SCALE))));
+    assert!(r.is_err());
+}
+
+#[test]
+fn the_buyer_sets_a_max_price_and_must_pay_it() {
+    let mut c = market();
+    catch(&mut c, PLAYER, "snapper", 2);
+    let idx = listed_by(&mut c, PLAYER, "snapper", 2);
+    testing_env!(ctx_pay(BUYER, ONE_NEAR, T0 + 1));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.buy_listing(idx, 1, U128(1))));
+    assert!(r.is_err(), "max price below the ask");
+    testing_env!(ctx_pay(BUYER, 1, T0 + 1));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.buy_listing(idx, 1, U128(10 * PRICE_SCALE))));
+    assert!(r.is_err(), "deposit below the price");
+}
+
+// ============================================================ supply ledger
+
+fn supply_of(c: &Contract, id: &str) -> SupplyView {
+    c.supply().into_iter().find(|s| s.item_id == id).unwrap()
+}
+
+#[test]
+fn the_ledger_counts_what_is_caught_and_burned() {
+    let mut c = market();
+    signer_on(&mut c);
+    let rs: Vec<CatchReceipt> = (0..14).map(|_| receipt(PLAYER, "shallows", "snapper")).collect();
+    testing_env!(ctx_pay(PLAYER, ONE_NEAR, T0));
+    c.claim_catches(rs);
+    testing_env!(ctx_at(PLAYER, T0));
+    c.acquire_rod("carbon".into(), true);
+    testing_env!(ctx_pay(OWNER, 20 * ONE_NEAR, T0));
+    c.fund_vault(U128(0));
+    testing_env!(ctx(PLAYER));
+    c.sell_to_market("snapper".into(), 2);
+    let s = supply_of(&c, "snapper");
+    assert_eq!(s.minted, 14);
+    assert_eq!(s.burned.rods, 12);
+    assert_eq!(s.burned.vault, 2);
+    assert_eq!(s.circulating, 0);
+}
+
+#[test]
+fn a_glut_slows_the_zone_that_makes_it() {
+    let mut c = market();
+    assert_eq!(c.regen_factor_bps("shallows".into()).0, 10_000);
+    for k in 0..12 {
+        let who = format!("angler{}.near", k);
+        catch(&mut c, &who, "guppy", 50);
+    }
+    let s = supply_of(&c, "guppy");
+    assert_eq!(s.circulating, 600);
+    // 400 target / 600 in circulation = two thirds of the normal rate.
+    assert_eq!(c.regen_factor_bps("shallows".into()).0, 400 * 10_000 / 600);
+    assert_eq!(c.regen_factor_bps("abyss".into()).0, 10_000, "other zones are unaffected");
 }

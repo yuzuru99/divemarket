@@ -137,10 +137,10 @@ export function SeasonBanner({ season }) {
   if (!season) return null;
   const s = SEASONS[season.name] || { name: season.name, blurb: '' };
   return (
-    <div className="season">
-      <span>This week: <b>{s.name}</b></span>
-      <span className="muted">{s.blurb}</span>
-      <span className="muted" style={{ marginLeft: 'auto' }}>changes in {left}</span>
+    <div className={`season s-${season.name}`} role="note">
+      <b>{s.name}</b>
+      <span className="season-blurb">{s.blurb}</span>
+      <span className="season-left">Next change in {left}</span>
     </div>
   );
 }

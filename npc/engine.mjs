@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { KeyPair } = require('near-api-js');
 import { decide, fairPriceOf, PERSONALITIES, planOrders } from './decide.mjs';
+import { think, rulesNote, apiKey } from './brain.mjs';
 import { readFileSync } from 'node:fs';
 
 // ----------------------------------------------------------------- config
@@ -156,29 +157,79 @@ async function sendCall(provider, accountId, keyPair, methodName, args, depositY
 /** Week each NPC last posted each weekly order (lost on restart: at worst one repost). */
 const postedWeekly = {};
 
+/** How often each NPC asks NEAR AI Cloud for a new plan, and posts a note. */
+const BRAIN_MS = Number(process.env.BRAIN_MS || 60 * 60_000);
+const NOTE_MS = Number(process.env.NOTE_MS || 50 * 60_000);
+const BRAIN_RETRY_MS = Number(process.env.BRAIN_RETRY_MS || 10 * 60_000);
+const WEEK_NS = 7n * 86_400n * 1_000_000_000n;
+/** The latest plan per NPC: { at, plan, source }. */
+const brains = {};
+/** The last note posted per NPC: { at, text }. */
+const notes = {};
+
+/** Units players bought from this NPC over the last seven days, per fish. */
+function soldLastWeek(trades, npcId) {
+  const since = BigInt(Date.now()) * 1_000_000n - WEEK_NS;
+  const out = {};
+  for (const t of trades) {
+    if (t.kind !== 'player_buy' || t.npc_id !== npcId || BigInt(t.at_ns) < since) continue;
+    out[t.item_id] = (out[t.item_id] || 0) + Number(t.units);
+  }
+  return out;
+}
+
 async function tick(provider, npcId) {
-  const [npc, items, listings, orders, season] = await Promise.all([
+  const [npc, items, listings, orders, season, trades] = await Promise.all([
     view(provider, 'get_npc', { id: npcId }),
     view(provider, 'market_snapshot'),
     view(provider, 'open_listings'),
     view(provider, 'orders'),
     view(provider, 'current_season'),
+    view(provider, 'recent_trades', { limit: 300 }),
   ]);
   if (!npc) {
     console.log(`[${npcId}] not registered, skipping`);
     return;
   }
 
+  const sold = soldLastWeek(trades, npcId);
+
+  // Brain: once an hour, ask NEAR AI Cloud for this week's plan. Any failure
+  // (or no API key) leaves the NPC on its rules.
+  const b = brains[npcId];
+  // After a failed call (no credit yet, a timeout) retry sooner, so the NPC
+  // switches to its AI plan soon after the account starts working.
+  const brainDue = b && Date.now() - b.at > (b.plan ? BRAIN_MS : BRAIN_RETRY_MS);
+  if (!b || brainDue || b.season !== season.name) {
+    const fair = Object.fromEntries(items.map((i) => [i.id, Number(fairPriceOf(i)) / 1e6]));
+    const treasuryNear = Number(BigInt(npc.treasury) / 10n ** 21n) / 1000;
+    const plan = await think(npcId, { npc, season: season.name, sold, fair, treasuryNear });
+    brains[npcId] = { at: Date.now(), season: season.name, plan, source: plan ? 'near-ai' : 'rules' };
+    console.log(`[${npcId}] BRAIN ${plan ? `near-ai ${JSON.stringify(plan.orders)}` : 'rules (no AI plan)'}`);
+  }
+  const brain = brains[npcId];
+
   // Orders: standing ones are reposted as soon as they fill, the seasonal
   // one once a week. One order per tick keeps each tick a single transaction.
   const posted = (postedWeekly[npcId] ||= {});
-  const due = planOrders(npcId, npc, items, season.name, orders, season.week, posted);
+  const due = planOrders(npcId, npc, items, season.name, orders, season.week, posted, { sold, ai: brain.plan?.orders });
   if (due.length) {
     const plan = due[0];
     console.log(`[${npcId}] ORDER ${plan.standing ? 'standing' : 'weekly'} ${plan.units} ${plan.itemId} @ ${plan.price} (${season.name})`);
     await sendCall(provider, `${npcId}.${CONTRACT}`, signerFor(`${npcId}.${CONTRACT}`), 'npc_post_order',
       { npc_id: npcId, item_id: plan.itemId, units: plan.units, price: plan.price.toString() }, '0');
     if (!plan.standing) posted[plan.itemId] = Number(season.week);
+    return;
+  }
+
+  // A market note on chain, from the NPC's own account, at most hourly.
+  const text = (brain.source === 'near-ai' && brain.plan?.note) || rulesNote(npcId, npc, season.name);
+  const last = notes[npcId];
+  if (!last || (Date.now() - last.at > NOTE_MS && last.text !== text)) {
+    console.log(`[${npcId}] NOTE (${brain.source}) ${text}`);
+    await sendCall(provider, `${npcId}.${CONTRACT}`, signerFor(`${npcId}.${CONTRACT}`), 'npc_post_note',
+      { npc_id: npcId, text, source: brain.source }, '0');
+    notes[npcId] = { at: Date.now(), text };
     return;
   }
 
@@ -255,7 +306,8 @@ async function main() {
   console.log(`  contract: ${CONTRACT}`);
   console.log(`  network:  ${NETWORK}`);
   console.log(`  npcs:     ${npcIds.join(', ')}`);
-  console.log(`  tick:     ${TICK_MS}ms\n`);
+  console.log(`  tick:     ${TICK_MS}ms`);
+  console.log(`  brain:    ${apiKey() ? 'NEAR AI Cloud' : 'rules (no NEAR AI key)'}\n`);
 
   for (const id of npcIds) {
     try {
@@ -267,7 +319,23 @@ async function main() {
 
   if (process.env.ONCE) return;
 
+  // Hourly: anything the vault holds above its ceiling goes to this week's
+  // tournament pot. Anyone may call it; Bob pays the gas.
+  let lastSweep = 0;
+  const sweep = async () => {
+    if (Date.now() - lastSweep < 60 * 60_000) return;
+    lastSweep = Date.now();
+    try {
+      const vault = BigInt(await view(near, 'vault_balance'));
+      if (vault > 10n * ONE_NEAR) {
+        console.log(`[vault] sweeping surplus above 10 NEAR into the tournament pot`);
+        await sendCall(near, `bob.${CONTRACT}`, signerFor(`bob.${CONTRACT}`), 'sweep_vault_surplus', {}, '0');
+      }
+    } catch (err) { console.error('[vault] sweep failed:', err.message); }
+  };
+
   setInterval(async () => {
+    await sweep();
     for (const id of npcIds) {
       try {
         await tick(near, id);

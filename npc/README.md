@@ -13,7 +13,11 @@ views, decides, and signs one action from the NPC's own account.
 | John | Shipwright supplier | snapper at +5% | snapper (rods, docks) | tilapia; more in a storm week |
 
 The spread between what a shop pays (fair +5%) and what it sells for (cost
-+12% at least) is its profit. Staples are never dumped below cost, so a shop
++4% to +12%) is its profit. Each shop has a shelf cap per fish (Bob: 30 guppy,
+30 tilapia, 10 tuna; Alice: 4 koi, 15 snapper; John: 25 snapper, 15 tilapia)
+and stops buying when it is full; order sizes follow what players bought from
+it in the last seven days (about 1.5x, at least 5). The margin is 12% up to
+half a shelf and slides to 4% when full. Staples are never dumped below cost, so a shop
 that buys a lot simply waits for players who need bait or crafting fish. That
 profit is what NPC investors are paid from.
 
@@ -32,6 +36,27 @@ The engine cannot change prices (fair price is a pure function of on-chain
 counters), cannot spend beyond the treasury, and cannot move funds out: every
 payout path is a contract method with its own checks.
 
+## Brain: NEAR AI Cloud
+
+`brain.mjs` asks a model on NEAR AI Cloud (`https://cloud-api.near.ai/v1`,
+OpenAI-compatible) once an hour per NPC, with the season, fair prices, the
+NPC's shelf, treasury and last week's sales. The model answers with a premium
+and a size per fish, and a one-line note for players. The answer is advice:
+`sanitizePlan` keeps only the NPC's own fish and clamps every number,
+`boundPlan` caps sizes by shelf room and demand, and the contract still checks
+price bands and escrow. The note is posted on chain with `npc_post_note`,
+labelled `near-ai`; without a key, or on any error, the NPC uses its rules and
+labels its note `rules`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NEAR_AI_API_KEY` | read from `.secrets/near-ai.key` | NEAR AI Cloud key |
+| `NEAR_AI_MODEL` | `z-ai/glm-5.3-flash` | model (`z-ai/glm-5.3` for the larger one) |
+| `BRAIN_MS` | 3600000 | how often each NPC re-plans |
+
+The engine also sweeps vault holdings above 10 NEAR into the weekly
+tournament pot once an hour.
+
 ## Keys
 
 The engine signs with the NPC accounts' keys from the local NEAR credentials
@@ -46,7 +71,8 @@ can only trade within the limits above.
 |---|---|
 | `decide.mjs` | Pure decisions: `decide` (buy / ask / hold, with the shop margin) and `planOrders` (which standing and weekly orders to post). No network, no keys. |
 | `engine.mjs` | Reads views, calls `decide` / `planOrders`, signs and sends one action per NPC per tick. |
-| `test-decide.mjs` | 40 offline assertions: pricing, personalities, reserve, roles, orders, shop margin. |
+| `brain.mjs` | NEAR AI Cloud planning: prompt, call, `sanitizePlan`, and the rule fallback note. |
+| `test-decide.mjs` | 51 offline assertions: pricing, personalities, reserve, roles, orders, shelf caps, margin decay, AI parsing. |
 
 ## Run
 

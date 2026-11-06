@@ -6,7 +6,7 @@
  * players, so a ticket can be cashed by exactly one account.
  */
 import { ACCOUNT_RE, readBody, safeEqual, send, signReceipt, ticketMac, view } from './_lib.js';
-import { ZONES, FISH } from '../src/game.js';
+import { ZONES, FISH, RODS } from '../src/game.js';
 
 const MAX_TICKETS = 200;
 
@@ -22,9 +22,15 @@ export default async function handler(req, res) {
   // A guest fished with a loaner. Bringing that catch ashore needs a rod
   // of your own, so a free guest session cannot mint fish for an account
   // that never paid for one.
-  let rods = [];
-  try { rods = await view('rods_of', { player }); } catch { return send(res, 503, { error: 'cannot read the sea right now, try again' }); }
-  if (!rods.length) return send(res, 403, { error: 'Buy a Bamboo Rod (0.1 NEAR) to bring your guest catch ashore.', needRod: true });
+  let status = [];
+  try { status = await view('rod_status', { player }); } catch { return send(res, 503, { error: 'cannot read the sea right now, try again' }); }
+  if (!status.length) return send(res, 403, { error: 'Buy a Bamboo Rod (0.1 NEAR) to bring your guest catch ashore.', needRod: true });
+  // The catch wears a rod of the player's own, like any other: the Bamboo Rod
+  // if it still has life, else the lowest-tier rod that does. Without this a
+  // guest session would be a way to land fish without wearing any rod.
+  const working = status.filter((s) => s.left > 0 && RODS[s.id]).sort((a, b) => RODS[a.id].tier - RODS[b.id].tier);
+  if (!working.length) return send(res, 403, { error: 'All your rods are worn out. Repair one in Gear to bring your guest catch ashore.' });
+  const rod = (working.find((s) => s.id === 'bamboo') || working[0]).id;
 
   const receipts = [];
   const rejected = [];
@@ -34,8 +40,8 @@ export default async function handler(req, res) {
       && safeEqual(ticketMac(t.zone_id, t.item_id, t.nonce, t.weight_g), t.mac);
     if (!ok) { rejected.push(t?.nonce ?? null); continue; }
     receipts.push({
-      zone_id: t.zone_id, item_id: t.item_id, units: 1, nonce: t.nonce, weight_g: t.weight_g,
-      signature: signReceipt(player, t.zone_id, t.item_id, 1, t.nonce, t.weight_g),
+      zone_id: t.zone_id, item_id: t.item_id, units: 1, nonce: t.nonce, weight_g: t.weight_g, rod,
+      signature: signReceipt(player, t.zone_id, t.item_id, 1, t.nonce, t.weight_g, false, null, rod),
     });
   }
   return send(res, 200, { receipts, rejected });

@@ -7,6 +7,7 @@ Built at NEAR HACKATHON — tracks: **Games With Real Economies** (primary),
 Agent Economy, Social Money.
 
 - **Play:** https://dist-swart-nu-14.vercel.app (NEAR testnet; no wallet needed to start fishing)
+- **AI agents:** the NPC shopkeepers plan with NEAR AI Cloud and publish their reasoning on chain
 - **Contract:** [`dm21.testnet`](https://testnet.nearblocks.io/address/dm21.testnet)
 - **NPC accounts:** `bob.dm21.testnet`, `alice.dm21.testnet`, `john.dm21.testnet`
 
@@ -35,6 +36,13 @@ What makes it more than a mini-game is that **the sea is shared and finite**:
   a week. Staple orders pay fair +5%, and staples go back on the shelf at
   cost +12% at least: that spread is each shop's profit, and what its
   investors are paid from.
+- The NPCs are **AI agents with wallets**. Once an hour each asks a model on
+  **NEAR AI Cloud** how to run its shop this week (what premium to pay, how
+  much to stock) and posts a one-line market note on chain from its own
+  account. The model only advises: its answer is clamped to the NPC's own
+  fish, its shelf room and its recent sales, and the contract still enforces
+  every price band, reserve and escrow. Without an API key the NPCs run on
+  their rules and their notes say so.
 - The sea changes every week on its own: **calm, storm, koi run, tuna run**.
 
 Progression: **angler** (Shallows, Bamboo Rod) → **captain** (Carbon or
@@ -59,6 +67,7 @@ the wall and a 30 kg tuna to their name.
 | Market → **Sell to vault (N%)** | NEAR arrives at the vault's current bid (75% of fair when its reserve is full); the fair price ticks down (▼) |
 | Fish until a rod's bar runs red, then **Repair** | 85% of the NEAR goes to the vault and 15% to this week's tournament pot — or pay in fish instead |
 | Market → **Buy 1** from the cheapest NPC | The NPC's stock drops and its treasury rises |
+| Market → Player listings → **Buy 1** | The fish is yours and the seller is paid directly |
 | Market → **Fill** an NPC order | Paid from the order's escrow; the NPC's stock rises |
 | Weekly tournament → **Enter for 0.1 NEAR**, then fish | Your heaviest fish per zone appears as leader |
 | Trophy room → **Mount a koi** | Koi burned; your license discount rises 5% |
@@ -73,8 +82,8 @@ it live, and the Market page shows it.
 
 | Money in | Money out |
 |---|---|
-| Catch fee + zone licenses (Shallows 0.0005, Reef 0.005, Abyss 0.015 per fish) → vault (30% to the harbor master while the zone is healthy) | Vault pays players who sell straight to it at 75% of fair × min(1, vault / 5 NEAR): the bid shrinks as the reserve runs low, so heavy selling can never drain it, and NPC orders stay the better outlet |
-| Rod repairs → 85% vault, 15% tournament pot | |
+| Catch fee + zone licenses (Shallows 0.008, Reef 0.04, Abyss 0.07 per fish, up to 10x as a zone thins) → vault (30% to the harbor master while the zone is healthy) | Vault pays players who sell straight to it at 75% of fair × min(1, vault / 5 NEAR): the bid shrinks as the reserve runs low, so heavy selling can never drain it, and NPC orders stay the better outlet |
+| Rod repairs → 85% vault, 15% tournament pot | Vault holdings above 10 NEAR → this week's tournament pot (`sweep_vault_surplus`, anyone may call it) |
 | Rod purchases → vault | NPC treasuries pay players whose listings they buy, and fill orders from escrow |
 | Players buying NPC stock → NPC treasury | Harbor masters and their crews withdraw their license share |
 | Tournament tickets → weekly pot | Each zone's heaviest fish splits the pot (5% to the vault) |
@@ -89,6 +98,28 @@ craft and repair rods, koi mounted as trophies or released into zones, snapper
 burned for docks, and a daily cap of 80 fish per account (100 with a complete
 Fishdex).
 
+**What a fish costs, and what it pays:** licenses and rod wear take roughly a
+third of a Shallows fish's value, two fifths on the Reef and half in the Abyss
+(bait included). The rest is the angler's margin: about 0.01 NEAR a fish in the
+Shallows, 0.05 on the Reef and 0.06 in the Abyss at the vault's full bid, more
+through NPC orders. Licenses are what refill the vault as people fish.
+
+**Fish supply** is on chain and goes both ways. Fish enter only when someone
+catches one, out of a zone's finite, slowly regrowing population. They leave
+for good as bait, rod crafting and repairs, docks, koi trophies and releases,
+and sales to the vault, which keeps no fish. `supply()` shows caught, burned
+(by sink) and circulating for every fish. Each zone's regrowth follows its
+staple fish: when guppy in circulation passes 400 (tilapia 300 for the Reef,
+tuna 150 for the Abyss), that zone regrows more slowly, down to a quarter of
+its rate, until the glut clears.
+
+**Why nobody goes broke:** the vault bids less as its reserve thins, and gives
+anything above 10 NEAR back to players through the tournament pot. A shop
+stops buying a fish once its shelf is full (Bob holds at most 30 guppy), sizes
+its orders to what players bought from it last week, and never sells below
+cost: its margin slides from 12% to 4% as stock piles up, so old stock still
+sells at a profit.
+
 **Why it does not inflate:** NEAR only leaves the contract as a payment from
 someone who put it in — the vault from fees, licenses, rod sales and repairs;
 NPCs from their own treasuries; pots from tickets. Players who fish well are
@@ -100,13 +131,16 @@ NPC investors, never by newly created NEAR.
 | Feature | How it works |
 |---|---|
 | Zones | `register_zone`; population regrows per hour; license = base × capacity / population (≤10×) |
-| Rods | `acquire_rod(rod_id, craft)`: buy (NEAR → vault) or craft (fish burned). Bamboo 0.1 NEAR (tier 0, everyone's first rod). Tier 1: Carbon (1.5 NEAR or 12 snapper), Spinner (1.5 NEAR or 8 snapper + 5 tilapia, +15% weight). Tier 2: Master (6 NEAR or 25 snapper + 3 tuna), Harpoon (6 NEAR or 4 tuna + 1 koi, +30% weight), Legendary (craft only: 5 tuna + 2 koi, plus a mounted trophy and a 30 kg tuna record). Each receipt names its rod; every fish landed costs durability (tuna and koi 3), and a worn-out rod casts again only after `repair_rod` (NEAR: 85% vault, 15% this week's tournament pot; or fish, burned). `rod_status` shows what is left |
+| Rods | `acquire_rod(rod_id, craft)`: buy (NEAR → vault) or craft (fish burned). Bamboo 0.1 NEAR (tier 0, everyone's first rod, 100 durability). Tier 1: Carbon (1.5 NEAR or 12 snapper, 200), Spinner (1.5 NEAR or 8 snapper + 5 tilapia, +15% weight, 150). Tier 2: Master (6 NEAR or 25 snapper + 3 tuna, 250), Harpoon (6 NEAR or 4 tuna + 1 koi, +30% weight, 200), Legendary (craft only: 5 tuna + 2 koi, plus a mounted trophy and a 30 kg tuna record, 600). Each receipt names its rod; every fish landed costs durability (tuna and koi 3), and a worn-out rod casts again only after `repair_rod` (NEAR: 85% vault, 15% this week's tournament pot; or fish, burned). `rod_status` shows what is left |
 | Bait | Tiers: guppy 1 (+10% rare, +10% weight), tilapia 2 (+20%, +20%). `set_zone_bait` sets a zone's minimum: Reef guppy, Abyss tilapia; better bait is always accepted. The bait is part of the signed receipt and burned at claim |
 | Weights & records | Weight is signed with the catch; `personal_best`, `records` |
 | Trophies | `mount_trophy` (−5% license each, max −50%) or `release_koi` (+20 fish to a zone) |
 | Tournament | `enter_tournament`, `settle_tournament(week)` — anyone can pay out a finished week |
 | Seasons | `current_season` = week number mod 4; the game server and NPCs use the same formula |
 | Docks | `build_dock`: harbor master burns 20 snapper, zone capacity +10% (max 10 docks) |
+| Player market | `list_fair` puts fish up for 30 minutes; `buy_listing(index, units, max_price)` lets another player buy them, paid straight to the seller; NPCs buy from the same listings when the price suits them |
+| Supply | `supply()`: caught, burned (bait, rods, vault, docks, koi) and circulating per fish; `regen_factor_bps(zone)` |
+| NPC notes | `npc_post_note(npc_id, text, source)` from the NPC's own account (source `near-ai` or `rules`); `npc_notes`, and `world_state.notes` |
 | NPC orders | One per NPC per fish, up to 4 each. `npc_post_order` locks escrow; `fill_order(npc_id, item_id, units)` pays from it; `expire_order` returns it |
 | Fishdex | Land all 5 species once: +20 daily catches (100 instead of 80), permanently |
 | Poaching | Closed zones accept only receipts signed as poached; each pays 3× license to the harbor master |
@@ -117,7 +151,9 @@ NPC investors, never by newly created NEAR.
 
 - **One contract holds the whole economy** — fish holdings, zone populations,
   NPC treasuries, escrow, pots and stakes — so every player audits the same sea.
-- **NPCs are real accounts** (`bob.dm21.testnet` …) that sign their own trades.
+- **NPCs are AI agents with real accounts** (`bob.dm21.testnet` …) that sign their own trades
+  and notes. Their plans come from NEAR AI Cloud (OpenAI-compatible API), bounded twice:
+  by the engine (own fish only, shelf caps, recent demand) and by the contract.
   The contract bounds what they may do (price bands, reserve, rate limit), so a
   misbehaving decision engine cannot overspend or misprice.
 - **Catches are signed receipts.** The game server decides each catch and signs
@@ -160,13 +196,14 @@ browser (React, app/)          game server (Vercel functions, app/api/)     NEAR
 ```
 contract/            Rust contract (near-sdk 5)
   src/lib.rs         economy, zones, rods, NPCs, orders, tournament, records, crew
-  tests/economy.rs   122 tests
+  tests/economy.rs   133 tests
 app/                 React game + Vercel functions
   src/               game.js (rules shared with the server), Fishing.jsx (scene),
                      Market.jsx, Zones.jsx, Endgame.jsx, App.jsx
   api/               cast.js, strike.js, adopt.js, _lib.js (signing)
   e2e/               test-only browser run (test wallet, local server, Playwright)
-npc/                 NPC engine: decide.mjs (pure), engine.mjs (signs and sends)
+npc/                 NPC engine: decide.mjs (pure rules), brain.mjs (NEAR AI Cloud),
+                     engine.mjs (signs and sends)
 sim/                 anglers.mjs: the five [sim] players
 scripts/             deploy.sh (fresh economy), vercel-env.sh (server secrets),
                      e2e.sh (browser run), run-bots.sh (NPCs + sims)
@@ -177,7 +214,7 @@ scripts/             deploy.sh (fresh economy), vercel-env.sh (server secrets),
 
 ```bash
 # contract
-cargo test                                   # 122 tests
+cargo test                                   # 133 tests
 cargo build --target wasm32-unknown-unknown --release
 # .cargo/config.toml adds `--cfg near`: without it near-sdk 5.30 compiles every
 # require!/panic into a bare "unreachable" trap and errors lose their message.
@@ -189,7 +226,9 @@ bash scripts/deploy.sh my-divemarket.testnet my-funder.testnet
 # NPCs and simulated anglers (repo root: npm install once)
 CONTRACT_ID=my-divemarket.testnet npm run npc
 CONTRACT_ID=my-divemarket.testnet GAME_URL=https://your-game.vercel.app npm run sim
-npm test                                     # 40 NPC tests, offline
+npm test                                     # 53 NPC tests, offline
+# NPC brains: put a NEAR AI Cloud key in .secrets/near-ai.key (or NEAR_AI_API_KEY);
+# NEAR_AI_MODEL picks the model. No key: the NPCs run on rules.
 
 # game
 cd app && npm install

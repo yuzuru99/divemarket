@@ -79,7 +79,7 @@ while (hits < 2 && casts < 10) {
   console.log(`  cast ${casts}: ${s.hit ? `${s.fish} ${s.weight}g` : s.reason}`);
   await sleep(3200);
 }
-const cooler = await page.locator('.hud > div', { hasText: 'In the cooler' }).locator('.v').textContent();
+const cooler = await page.getByTestId('cooler-count').textContent();
 rec('fishing: catches land in the cooler', Number(cooler) === hits && hits > 0, `${hits} hits in ${casts} casts, cooler shows ${cooler}`);
 
 await step('claim catch (Keep in inventory)', () => page.getByRole('button', { name: 'Keep in inventory' }).click(), async () => {
@@ -133,6 +133,21 @@ if (await prices.locator('tr', { hasText: 'Guppy' }).getByRole('button', { name:
   });
 } else rec('buy 1 guppy from the cheapest NPC', true, 'skipped: no NPC has guppy in stock right now');
 await sleep(4000);
+// ---- P2P: buy one fish another player listed
+{
+  const row = page.locator('table.p2p tbody tr').first();
+  if (await row.count()) {
+    const fishName = ((await row.locator('td').nth(1).textContent()) || '').replace(/^\d+\s+/, '').trim();
+    const id = { Guppy: 'guppy', Tilapia: 'tilapia', Snapper: 'snapper', Tuna: 'tuna', 'Legendary Koi': 'koi' }[fishName];
+    const h0 = await held(id);
+    await step(`buy 1 ${id} from another player`, () => row.getByRole('button', { name: 'Buy 1' }).click(), async () => {
+      const h = await held(id);
+      const t = (await view('recent_trades', { limit: 5 })).find((x) => x.kind === 'p2p' && x.counterparty === P);
+      return [h === h0 + 1 && !!t, `${id} ${h0} -> ${h}`];
+    });
+    await sleep(4000);
+  } else rec('buy from another player', true, 'skipped: no player listings open');
+}
 const orders0 = await view('orders');
 const fillable = orders0.find((o) => o.units_left > 0 && ['guppy', 'tilapia', 'snapper'].includes(o.item_id));
 if (fillable && (await held(fillable.item_id)) > 0) {
@@ -151,8 +166,8 @@ await step('invest 0.1 NEAR in Alice', () => page.locator('section.npc', { hasTe
   return [p1 - p0 === 10n ** 23n, `principal ${p0} -> ${p1}`];
 });
 
-// ---- play page: bait shop
-await page.getByRole('button', { name: 'Play', exact: true }).click();
+// ---- gear page: bait shop
+await page.getByRole('button', { name: 'Gear', exact: true }).click();
 await sleep(6000);
 const gb = await held('guppy');
 const bait = page.locator('section.panel', { hasText: 'Bait shop' });
@@ -183,6 +198,8 @@ if (snap >= 12 && !(await view('rods_of', { player: P })).includes('carbon')) {
 } else rec('craft a Carbon Rod', true, `skipped: ${snap} snapper or already owned`);
 
 // ---- bait in open water: pick guppy, land one fish, the guppy is burned
+await page.getByRole('button', { name: 'Fish', exact: true }).click();
+await sleep(1500);
 if ((await held('guppy')) > 0) {
   await page.locator('.bait-pick button', { hasText: 'Guppy' }).click();
   await sleep(500);
@@ -215,12 +232,13 @@ if ((await held('guppy')) > 0) {
 } else rec('cast with bait', true, 'skipped: no guppy');
 
 // ---- repair: a worn bamboo is repaired for 0.03 NEAR, 15% of it into the tournament pot
+await page.getByRole('button', { name: 'Gear', exact: true }).click();
 await sleep(4000);
 const bam = (await view('rod_status', { player: P })).find((r) => r.id === 'bamboo');
 if (bam && bam.left < bam.durability) {
   const week = Math.floor(Date.now() / (7 * 86_400_000));
   const pot0 = BigInt((await view('tournament', { week })).pot);
-  await step('repair the Bamboo Rod with NEAR', () => page.locator('.rod', { hasText: 'Bamboo Rod' }).getByRole('button', { name: /Repair 0.03/ }).click(), async () => {
+  await step('repair the Bamboo Rod with NEAR', () => page.locator('.rod', { hasText: 'Bamboo Rod' }).getByRole('button', { name: /Repair for 0.03/ }).click(), async () => {
     const b = (await view('rod_status', { player: P })).find((r) => r.id === 'bamboo');
     const pot = BigInt((await view('tournament', { week })).pot);
     return [b.left === b.durability && pot - pot0 === 4_500_000_000_000_000_000_000n, `left ${b.left}, pot +${pot - pot0}`];

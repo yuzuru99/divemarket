@@ -96,6 +96,9 @@ export function fairPriceOf(item) {
   return price < 1n ? 1n : price;
 }
 
+/** Listings live 30 minutes on chain (LISTING_TTL_SECONDS); keep a minute of margin. */
+const LISTING_TTL_MS = 29 * 60_000;
+
 export function decide(npcId, npc, items, listings, roles = ROLES) {
   const p = PERSONALITIES[npcId];
   if (!p) return { action: 'HOLD', reason: `no personality for ${npcId}` };
@@ -134,7 +137,8 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
       let ask = (fair * (BPS + p.sellToleranceBps)) / BPS;
       // ...but a staple never sells for less than cost plus the shop margin.
       if (staple) {
-        const floor = (avgCost * (BPS + SHOP_MARGIN_BPS)) / BPS;
+        const margin = shopMarginBps(stockOf(npc, lot.item_id), SHELF_CAP[npcId]?.[lot.item_id]);
+        const floor = (avgCost * (BPS + margin)) / BPS;
         if (ask < floor) ask = floor;
       }
       // An ask is a standing offer: a sale needs a player to pay it. If the
@@ -168,8 +172,13 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
   for (const [globalIndex, l] of listings) {
     const item = items.find((it) => it.id === l.item_id);
     if (!item) continue;
-    // An NPC only buys what it has a use for.
+    // An NPC only buys what it has a use for, and only while its shelf has room.
     if (wants && !(l.item_id in wants)) continue;
+    const cap = SHELF_CAP[npcId]?.[l.item_id];
+    const room = cap === undefined ? Infinity : cap - stockOf(npc, l.item_id);
+    if (room <= 0) continue;
+    // The contract refuses listings past their 30-minute life; skip them.
+    if (Number(l.created_ns) > 0 && Date.now() * 1e6 - Number(l.created_ns) > LISTING_TTL_MS * 1e6) continue;
     const premium = wants ? wants[l.item_id] : 0n;
 
     const fair = BigInt(fairPriceOf(item));
@@ -211,7 +220,7 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
     const perUnit = (ask * ONE_NEAR) / PRICE_SCALE;
     if (perUnit === 0n) continue;
     let units = Number(budget / perUnit);
-    units = Math.min(units, l.units);
+    units = Math.min(units, l.units, room);
     if (units <= 0) continue;
 
     return {
@@ -248,8 +257,32 @@ export function decide(npcId, npc, items, listings, roles = ROLES) {
  * collection, John buys snapper for dock timber. The weekly order follows
  * the season and is posted once per week.
  */
-/** A shop's margin over cost on its staples (12%). */
+/** A shop's margin over cost on its staples: 12% normally... */
 export const SHOP_MARGIN_BPS = 1_200n;
+/** ...sliding to 4% as the shelf fills up, so old stock still sells at a profit. */
+export const MIN_SHOP_MARGIN_BPS = 400n;
+
+/**
+ * How much of each staple a shop will hold. A shop stops buying when its
+ * shelf is full, so its treasury never drains into fish nobody buys.
+ */
+export const SHELF_CAP = {
+  bob: { guppy: 30, tilapia: 30, tuna: 10 },
+  alice: { koi: 4, snapper: 15 },
+  john: { snapper: 25, tilapia: 15 },
+};
+
+/** Units of an item an NPC holds, across its lots. */
+export const stockOf = (npc, item) =>
+  (npc.inventory || []).filter((l) => l.item_id === item).reduce((s, l) => s + Number(l.units), 0);
+
+/** The shop margin at a given fill level: 12% up to half full, then down to 4% when full. */
+export function shopMarginBps(stock, cap) {
+  if (!cap || stock <= cap / 2) return SHOP_MARGIN_BPS;
+  const k = Math.min(1, (stock - cap / 2) / (cap / 2));
+  const span = Number(SHOP_MARGIN_BPS - MIN_SHOP_MARGIN_BPS);
+  return SHOP_MARGIN_BPS - BigInt(Math.round(span * k));
+}
 
 const ORDER_PLANS = {
   bob: (season) => [
@@ -286,28 +319,59 @@ function sizeOrder(npcId, npc, items, plan) {
   return { itemId: plan.item, units, price, standing: plan.standing };
 }
 
+/** Smallest order a shop posts while it has shelf room, even with no recent sales. */
+const MIN_ORDER_UNITS = 5;
+
 /**
  * The orders an NPC should (re)post now, given what is open. A standing order
  * is reposted when it is missing, filled, or from an older week; a weekly
  * order once per week (`posted` maps item → week it was last posted), so
  * filling it ends the deal until next week.
+ *
+ * Sizes are bounded three ways: the plan, the room left on the shelf
+ * (SHELF_CAP minus stock), and recent demand (`sold`: units players bought
+ * from this NPC in the last week; the shop buys about 1.5x what it sells).
+ * `ai` may adjust premium and size per item, but only inside those bounds.
  */
-export function planOrders(npcId, npc, items, season, open, week, posted = {}) {
+export function planOrders(npcId, npc, items, season, open, week, posted = {}, opts = {}) {
+  const { sold, ai } = opts;
   const plans = ORDER_PLANS[npcId]?.(season) || [];
   const out = [];
-  for (const plan of plans) {
-    const o = open.find((x) => x.npc_id === npcId && x.item_id === plan.item);
+  for (const base of plans) {
+    const o = open.find((x) => x.npc_id === npcId && x.item_id === base.item);
     const stale = !o || Number(o.week) < Number(week);
     const empty = o && Number(o.units_left) === 0;
-    if (!(stale || (plan.standing && empty))) continue;
+    if (!(stale || (base.standing && empty))) continue;
     // A filled order is closed on chain, so "missing" can mean "done":
     // a weekly order already posted this week is not posted again.
-    if (!plan.standing && !o && Number(posted[plan.item]) === Number(week)) continue;
+    if (!base.standing && !o && Number(posted[base.item]) === Number(week)) continue;
+    const plan = boundPlan(npcId, npc, base, sold, ai);
+    if (!plan) continue;
     const sized = sizeOrder(npcId, npc, items, plan);
     if (sized) out.push(sized);
   }
   return out;
 }
+
+/** Apply the shelf cap, recent demand and any AI adjustment to one plan. */
+export function boundPlan(npcId, npc, base, sold, ai) {
+  const cap = SHELF_CAP[npcId]?.[base.item];
+  const room = cap === undefined ? base.units : cap - stockOf(npc, base.item);
+  if (room <= 0) return null;
+  let units = Math.min(base.units, room);
+  if (sold) units = Math.min(units, Math.max(MIN_ORDER_UNITS, Math.ceil((sold[base.item] || 0) * 1.5)));
+  let premiumBps = base.premiumBps;
+  const a = ai?.[base.item];
+  if (a) {
+    if (Number.isFinite(a.units)) units = Math.max(0, Math.min(units, Math.floor(a.units)));
+    if (Number.isFinite(a.premiumBps)) premiumBps = BigInt(Math.max(0, Math.min(2_000, Math.round(a.premiumBps))));
+  }
+  if (units < 1) return null;
+  return { ...base, units, premiumBps };
+}
+
+/** What a plan looks like before bounds, for the AI to reason about. */
+export const plansFor = (npcId, season) => ORDER_PLANS[npcId]?.(season) || [];
 
 /** The NPC's seasonal weekly order (kept for callers that want just one). */
 export function planOrder(npcId, npc, items, season) {

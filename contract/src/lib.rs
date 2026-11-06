@@ -198,6 +198,56 @@ pub const VAULT_PRICE_BPS: u128 = 7_500;
 /// The vault pays its full 75% only while it holds at least this much; below
 /// it, the bid shrinks in proportion, so heavy selling can never drain it.
 pub const VAULT_TARGET: u128 = 5 * ONE_NEAR;
+/// What the vault holds beyond this goes back to players: anyone may sweep
+/// the surplus into this week's tournament pot.
+pub const VAULT_CEILING: u128 = 10 * ONE_NEAR;
+/**
+ * Supply control. Each zone's regrowth is tied to how much of its staple
+ * fish is in circulation (caught minus burned): above the target, the zone
+ * regrows more slowly, down to a quarter of its rate, so a glut corrects
+ * itself without anyone stepping in.
+ */
+pub const SUPPLY_TARGETS: [(&str, &str, u64); 3] = [("shallows", "guppy", 400), ("reef", "tilapia", 300), ("abyss", "tuna", 150)];
+pub const MIN_REGEN_BPS: u128 = 2_500;
+
+/// Fish taken out of circulation for good, by where they went.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, Default)]
+pub struct Burned {
+    pub rods: u64,
+    pub vault: u64,
+    pub docks: u64,
+    pub koi: u64,
+}
+
+/// One fish's supply, as the Market shows it.
+#[near(serializers = [json])]
+pub struct SupplyView {
+    pub item_id: String,
+    pub minted: u64,
+    pub burned_bait: u64,
+    pub burned: Burned,
+    pub circulating: u64,
+    /// Circulation target for this fish, if a zone's regrowth follows it.
+    pub target: Option<u64>,
+    pub zone: Option<String>,
+    /// That zone's regrowth right now, in basis points of its normal rate.
+    pub regen_bps: Option<U128>,
+}
+
+/// Longest market note an NPC may publish.
+pub const MAX_NOTE_CHARS: usize = 240;
+
+/// A short market note an NPC publishes from its own account: what its
+/// decision engine (NEAR AI Cloud, or the rule fallback) is doing and why.
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug)]
+pub struct NpcNote {
+    pub npc_id: String,
+    pub text: String,
+    pub source: String,
+    pub at_ns: u64,
+}
 /// Share of every NEAR rod repair paid into this week's tournament pot.
 pub const REPAIR_POT_BPS: u128 = 1_500;
 /// Legendary Rod requirements beyond its recipe.
@@ -233,17 +283,17 @@ pub struct RodSpec {
 }
 const MILLI: u128 = ONE_NEAR / 1_000;
 pub const RODS: [RodSpec; 6] = [
-    RodSpec { id: "bamboo", bit: 5, tier: 0, price: 100 * MILLI, recipe: &[], durability: 200,
+    RodSpec { id: "bamboo", bit: 5, tier: 0, price: 100 * MILLI, recipe: &[], durability: 100,
               repair: 30 * MILLI, repair_recipe: &[("guppy", 8)] },
-    RodSpec { id: "carbon", bit: 1, tier: 1, price: 1_500 * MILLI, recipe: &[("snapper", 12)], durability: 300,
+    RodSpec { id: "carbon", bit: 1, tier: 1, price: 1_500 * MILLI, recipe: &[("snapper", 12)], durability: 200,
               repair: 450 * MILLI, repair_recipe: &[("snapper", 5)] },
-    RodSpec { id: "spinner", bit: 2, tier: 1, price: 1_500 * MILLI, recipe: &[("snapper", 8), ("tilapia", 5)], durability: 220,
+    RodSpec { id: "spinner", bit: 2, tier: 1, price: 1_500 * MILLI, recipe: &[("snapper", 8), ("tilapia", 5)], durability: 150,
               repair: 450 * MILLI, repair_recipe: &[("snapper", 3), ("tilapia", 3)] },
-    RodSpec { id: "master", bit: 3, tier: 2, price: 6 * ONE_NEAR, recipe: &[("snapper", 25), ("tuna", 3)], durability: 400,
+    RodSpec { id: "master", bit: 3, tier: 2, price: 6 * ONE_NEAR, recipe: &[("snapper", 25), ("tuna", 3)], durability: 250,
               repair: 1_800 * MILLI, repair_recipe: &[("snapper", 8), ("tuna", 1)] },
-    RodSpec { id: "harpoon", bit: 4, tier: 2, price: 6 * ONE_NEAR, recipe: &[("tuna", 4), ("koi", 1)], durability: 300,
+    RodSpec { id: "harpoon", bit: 4, tier: 2, price: 6 * ONE_NEAR, recipe: &[("tuna", 4), ("koi", 1)], durability: 200,
               repair: 1_800 * MILLI, repair_recipe: &[("tuna", 2)] },
-    RodSpec { id: "legendary", bit: 6, tier: 2, price: 0, recipe: &[("tuna", 5), ("koi", 2)], durability: 1_000,
+    RodSpec { id: "legendary", bit: 6, tier: 2, price: 0, recipe: &[("tuna", 5), ("koi", 2)], durability: 600,
               repair: 3 * ONE_NEAR, repair_recipe: &[("tuna", 3), ("koi", 1)] },
 ];
 /// Wear a landed fish puts on the rod that caught it.
@@ -307,6 +357,8 @@ pub struct WorldState {
     pub leaderboards: (Vec<(AccountId, u64)>, Vec<(AccountId, u64)>),
     pub vault: U128,
     pub solvency: Solvency,
+    pub notes: Vec<NpcNote>,
+    pub supply: Vec<SupplyView>,
 }
 
 /// Everything about one player, in one view call.
@@ -372,8 +424,9 @@ pub struct Zone {
 }
 
 impl Zone {
-    fn regen(&mut self, now_ns: u64) {
-        let rate = if self.closed { self.regen_per_hour * 2 } else { self.regen_per_hour } as u128;
+    fn regen(&mut self, now_ns: u64, factor_bps: u128) {
+        let base = if self.closed { self.regen_per_hour * 2 } else { self.regen_per_hour } as u128;
+        let rate = base * factor_bps / BPS;
         if rate == 0 || self.population >= self.capacity {
             self.last_regen_ns = now_ns;
             return;
@@ -471,6 +524,8 @@ enum StorageKey {
     Crew,
     RodSet,
     RodWear,
+    NpcNotes,
+    Burned,
 }
 
 /// How rare an item is. Rarity is not cosmetic: it sets the base price, and
@@ -1244,7 +1299,8 @@ impl Contract {
                 Some(p) => touched.remove(p),
                 None => {
                     let mut z = zones.get(&r.zone_id).unwrap_or_else(|| env::panic_str("unknown zone"));
-                    z.regen(now);
+                    let f = self.regen_factor(&z.id);
+                    z.regen(now, f);
                     z
                 }
             };
@@ -1339,7 +1395,8 @@ impl Contract {
                 Some(p) => seen.remove(p),
                 None => {
                     let mut z = zones.get(&zid).unwrap_or_else(|| env::panic_str("unknown zone"));
-                    z.regen(now);
+                    let f = self.regen_factor(&z.id);
+                    z.regen(now, f);
                     z
                 }
             };
@@ -1369,7 +1426,8 @@ impl Contract {
         let mut z = Self::zones_map()
             .get(&zone_id.to_string())
             .unwrap_or_else(|| env::panic_str("unknown zone"));
-        z.regen(env::block_timestamp());
+        let f = self.regen_factor(&z.id);
+        z.regen(env::block_timestamp(), f);
         z
     }
 
@@ -1418,7 +1476,8 @@ impl Contract {
     /// One zone with its population regrown to now.
     pub fn get_zone(&self, zone_id: String) -> Option<ZoneView> {
         Self::zones_map().get(&zone_id).map(|mut z| {
-            z.regen(env::block_timestamp());
+            let f = self.regen_factor(&z.id);
+            z.regen(env::block_timestamp(), f);
             ZoneView { health_bps: z.health_bps(), fee_per_fish: U128(z.fee_per_fish()), zone: z }
         })
     }
@@ -1548,6 +1607,7 @@ impl Contract {
     pub fn mount_trophy(&mut self) -> u64 {
         let me = env::predecessor_account_id();
         self.burn_one(&me, "koi");
+        Self::count_burn("koi", 1, |b, n| b.koi += n);
         let n = Self::trophies_map().get(&me).unwrap_or(0) + 1;
         Self::trophies_map().insert(&me, &n);
         Self::bump_top(TROPHY_TOP_KEY, &me, n);
@@ -1560,6 +1620,7 @@ impl Contract {
         let me = env::predecessor_account_id();
         let mut z = self.load_zone(&zone_id);
         self.burn_one(&me, "koi");
+        Self::count_burn("koi", 1, |b, n| b.koi += n);
         z.population = (z.population + KOI_RELEASE_RESTOCK).min(z.capacity);
         self.save_zone(&z);
         let n = Self::releases_map().get(&me).unwrap_or(0) + 1;
@@ -1613,6 +1674,7 @@ impl Contract {
         let (base, n) = docks.get(&zone_id).unwrap_or((z.capacity, 0));
         require!(n < MAX_DOCKS, "this zone has all the docks it can hold");
         self.burn_n(&me, "snapper", DOCK_SNAPPER, "a dock takes 20 snapper");
+        Self::count_burn("snapper", DOCK_SNAPPER, |b, n| b.docks += n);
         let add = (base as u128 * DOCK_CAPACITY_BPS / BPS) as u64;
         z.capacity += add.max(1);
         self.save_zone(&z);
@@ -1819,6 +1881,8 @@ impl Contract {
             leaderboards: self.leaderboards(),
             vault: U128(self.vault_balance),
             solvency: self.solvency(),
+            notes: self.npc_notes(),
+            supply: self.supply(),
         }
     }
 
@@ -2108,6 +2172,7 @@ impl Contract {
             }
             for (item, n) in spec.recipe.iter() {
                 self.burn_n(&me, item, *n, "you do not have the fish this rod is crafted from");
+                Self::count_burn(item, *n, |b, n| b.rods += n);
             }
             if attached > 0 {
                 let _ = Promise::new(me.clone()).transfer(NearToken::from_yoctonear(attached));
@@ -2140,6 +2205,7 @@ impl Contract {
         if with_fish {
             for (item, n) in spec.repair_recipe.iter() {
                 self.burn_n(&me, item, *n, "you do not have the fish to repair this rod");
+                Self::count_burn(item, *n, |b, n| b.rods += n);
             }
             if attached > 0 {
                 let _ = Promise::new(me.clone()).transfer(NearToken::from_yoctonear(attached));
@@ -2170,6 +2236,150 @@ impl Contract {
                 RodStatus { id: r.id.to_string(), left: r.durability.saturating_sub(worn), durability: r.durability }
             })
             .collect()
+    }
+
+    /// Move whatever the vault holds above `VAULT_CEILING` into this week's
+    /// tournament pot. Anyone may call it: the vault keeps its reserve, and
+    /// the surplus goes back to the players who fish best. Returns the amount.
+    pub fn sweep_vault_surplus(&mut self) -> U128 {
+        let surplus = self.vault_balance.saturating_sub(VAULT_CEILING);
+        if surplus == 0 {
+            return U128(0);
+        }
+        self.vault_balance -= surplus;
+        let week = self.current_week();
+        let (pot, n) = Self::pot_map().get(&week).unwrap_or((0, 0));
+        Self::pot_map().insert(&week, &(pot + surplus, n));
+        Self::write_u128(TOURNEY_HELD_KEY, Self::read_u128(TOURNEY_HELD_KEY) + surplus);
+        env::log_str(&format!("sweep_vault_surplus: {} yocto to week {}", surplus, week));
+        U128(surplus)
+    }
+
+    fn notes_map() -> LookupMap<String, NpcNote> { LookupMap::new(StorageKey::NpcNotes) }
+
+    /// Publish a market note from an NPC's own account. `source` says what
+    /// wrote it ("near-ai" or "rules"), so players can tell.
+    pub fn npc_post_note(&mut self, npc_id: String, text: String, source: String) {
+        self.require_registered_npc_caller(&npc_id);
+        let text = text.trim().to_string();
+        require!(!text.is_empty(), "empty note");
+        require!(text.chars().count() <= MAX_NOTE_CHARS, "note too long");
+        require!(source == "near-ai" || source == "rules", "unknown note source");
+        Self::notes_map().insert(&npc_id, &NpcNote { npc_id: npc_id.clone(), text, source, at_ns: env::block_timestamp() });
+    }
+
+    /// The latest note from each NPC.
+    pub fn npc_notes(&self) -> Vec<NpcNote> {
+        let m = Self::notes_map();
+        self.npcs.keys().filter_map(|id| m.get(&id)).collect()
+    }
+
+    fn burned_map() -> LookupMap<String, Burned> { LookupMap::new(StorageKey::Burned) }
+
+    fn count_burn(item: &str, n: u64, f: impl Fn(&mut Burned, u64)) {
+        let mut m = Self::burned_map();
+        let mut b = m.get(&item.to_string()).unwrap_or_default();
+        f(&mut b, n);
+        m.insert(&item.to_string(), &b);
+    }
+
+    /// Fish of this kind in circulation: caught, minus everything burned.
+    fn circulating(&self, item: &str) -> u64 {
+        let minted = self.items.get(&item.to_string()).map(|i| i.total_minted).unwrap_or(0);
+        let b = Self::burned_map().get(&item.to_string()).unwrap_or_default();
+        let bait = Self::bait_burned_map().get(&item.to_string()).unwrap_or(0);
+        minted.saturating_sub(bait + b.rods + b.vault + b.docks + b.koi)
+    }
+
+    /// How fast a zone regrows right now, in bps of its normal rate: full
+    /// while its staple fish is at or below target, slower above it.
+    pub fn regen_factor_bps(&self, zone_id: String) -> U128 {
+        U128(self.regen_factor(&zone_id))
+    }
+
+    fn regen_factor(&self, zone_id: &str) -> u128 {
+        match SUPPLY_TARGETS.iter().find(|(z, _, _)| *z == zone_id) {
+            Some((_, fish, target)) => {
+                let c = self.circulating(fish);
+                if c <= *target {
+                    BPS
+                } else {
+                    (*target as u128 * BPS / c as u128).max(MIN_REGEN_BPS)
+                }
+            }
+            None => BPS,
+        }
+    }
+
+    /// The supply ledger for every fish.
+    pub fn supply(&self) -> Vec<SupplyView> {
+        self.items
+            .keys()
+            .map(|id| {
+                let t = SUPPLY_TARGETS.iter().find(|(_, f, _)| *f == id);
+                SupplyView {
+                    minted: self.items.get(&id).map(|i| i.total_minted).unwrap_or(0),
+                    burned_bait: Self::bait_burned_map().get(&id).unwrap_or(0),
+                    burned: Self::burned_map().get(&id).unwrap_or_default(),
+                    circulating: self.circulating(&id),
+                    target: t.map(|(_, _, n)| *n),
+                    zone: t.map(|(z, _, _)| z.to_string()),
+                    regen_bps: t.map(|(z, _, _)| U128(self.regen_factor(z))),
+                    item_id: id,
+                }
+            })
+            .collect()
+    }
+
+    /// Buy fish another player listed. The price is the seller's ask, paid
+    /// straight to the seller; `max_price` protects the buyer if the listing
+    /// changed. Listings live 30 minutes, like for NPCs.
+    #[payable]
+    pub fn buy_listing(&mut self, listing_index: u64, units: u64, max_price: U128) {
+        let buyer = env::predecessor_account_id();
+        let mut listing = self.listings.get(listing_index).unwrap_or_else(|| env::panic_str("no such listing"));
+        require!(listing.active, "listing closed");
+        require!(units >= 1 && units <= listing.units, "not that many units listed");
+        require!(listing.seller != buyer, "you cannot buy your own listing");
+        require!(
+            env::block_timestamp().saturating_sub(listing.created_ns) < LISTING_TTL_SECONDS * 1_000_000_000,
+            "listing has expired"
+        );
+        require!(listing.ask_price <= max_price.0, "the listing costs more than your max price");
+        let cost = listing.ask_price * units as u128 * ONE_NEAR / PRICE_SCALE;
+        let attached = env::attached_deposit().as_yoctonear();
+        require!(attached >= cost, "attach the price of the units");
+
+        listing.units -= units;
+        if listing.units == 0 {
+            listing.active = false;
+        }
+        self.listings.replace(listing_index, &listing);
+
+        let mut item = self.items.get(&listing.item_id).unwrap();
+        self.roll_window(&mut item);
+        item.listed_supply = item.listed_supply.saturating_sub(units);
+        item.player_buy_volume += units;
+        self.items.insert(&listing.item_id, &item);
+
+        let hk = (buyer.clone(), listing.item_id.clone());
+        let held = self.player_holdings.get(&hk).unwrap_or(0);
+        self.player_holdings.insert(&hk, &(held + units));
+
+        self.record_trade(TradeRecord {
+            kind: "p2p".to_string(),
+            npc_id: listing.seller.to_string(),
+            counterparty: buyer.clone(),
+            item_id: listing.item_id.clone(),
+            units,
+            price: listing.ask_price,
+            fair_price: self.fair_price_of(&listing.item_id),
+            at_ns: env::block_timestamp(),
+        });
+        if attached > cost {
+            let _ = Promise::new(buyer).transfer(NearToken::from_yoctonear(attached - cost));
+        }
+        let _ = Promise::new(listing.seller).transfer(NearToken::from_yoctonear(cost));
     }
 
     /// What the vault pays right now, in basis points of fair price.
@@ -2325,6 +2535,8 @@ impl Contract {
             "the market vault cannot cover this sale right now"
         );
         self.vault_balance -= cost;
+        // The vault does not keep fish: what it buys leaves circulation.
+        Self::count_burn(&item_id, units, |b, n| b.vault += n);
 
         let key = (player.clone(), item_id.clone());
         self.player_holdings.insert(&key, &(held - units));

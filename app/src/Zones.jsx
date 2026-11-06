@@ -18,55 +18,63 @@ function HealthBar({ bps }) {
   );
 }
 
-export function ZonePicker({ zones, zone, setZone, rodTier, held = {}, who, season = 'calm', poach = false, setPoach }) {
+/**
+ * The zone switcher above the water: one tab per zone with its health, and a
+ * sentence under it about the zone in use. Locked zones say what opens them.
+ */
+export function ZonePicker({ zones, zone, setZone, rodTier, held = {}, who, season = 'calm', poach = false, setPoach, part = 'all' }) {
   const anyClosed = zones.some((v) => v.zone.closed);
+  const cur = zones.find((v) => v.zone.id === zone);
+  const meta = ZONES[zone];
+  const names = Object.keys(zonePool(zone, season)).map((id) => FISH[id]?.name || id);
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
   return (
-    <>
-    {anyClosed && (
-      <label className="poach">
-        <input type="checkbox" checked={poach} onChange={(e) => setPoach?.(e.target.checked)} disabled={!who} />
-        Poach closed zones — fish bite better, but 3 in 10 casts the warden chases you off, and every
-        poached fish pays a 3× license fine to the zone's harbor master.
-      </label>
-    )}
-    <div className="zones">
-      {zones.map((v) => {
-        const meta = ZONES[v.zone.id];
-        if (!meta) return null;
-        const locked = rodTier < meta.minRod;
-        const stormed = !zoneOpen(v.zone.id, season);
-        const blocked = locked || stormed || (v.zone.closed && !poach) || v.zone.population === 0;
-        return (
-          <button
-            key={v.zone.id}
-            className={`zone ${zone === v.zone.id ? 'active' : ''}`}
-            disabled={blocked}
-            onClick={() => setZone(v.zone.id)}
-            style={{ '--zone': meta.hue }}
-          >
-            <div className="zname">{meta.name}{v.zone.closed && <span className="tag">closed</span>}{stormed && <span className="tag">{SEASONS[season].name}</span>}</div>
-            <HealthBar bps={v.health_bps} />
-            <div className="zstat">
-              <span>{v.zone.population}/{v.zone.capacity} fish</span>
-              <span>{yoctoToNearFine(v.fee_per_fish)} Ⓝ license</span>
-            </div>
-            <div className="zstat muted">
-              {locked
-                ? `needs ${RODS[ROD_BY_TIER[meta.minRod]].name}`
-                : Object.keys(zonePool(v.zone.id, season)).join(' · ')}
-            </div>
-            {meta.bait && (
-              <div className="zstat">
-                <span className="muted">bait: {meta.bait} or better</span>
-                {who && <span className={held[meta.bait] ? '' : 'down'}>you have {held[meta.bait] || 0}</span>}
-              </div>
-            )}
-            {v.zone.steward && <div className="zstat muted">harbor master: {short(v.zone.steward)}</div>}
-          </button>
-        );
-      })}
+    <div className={`zonebar zonebar-${part}`}>
+      {part !== 'detail' && (
+      <div className="zone-tabs" role="tablist" aria-label="Fishing zone">
+        {zones.map((v) => {
+          const m = ZONES[v.zone.id];
+          if (!m) return null;
+          const locked = rodTier < m.minRod;
+          const stormed = !zoneOpen(v.zone.id, season);
+          const blocked = locked || stormed || (v.zone.closed && !poach) || v.zone.population === 0;
+          const note = locked ? `Needs a ${RODS[ROD_BY_TIER[m.minRod]].name}`
+            : stormed ? SEASONS[season].name
+            : v.zone.closed ? 'Closed by its harbor master'
+            : `${v.zone.population} of ${v.zone.capacity} fish`;
+          return (
+            <button
+              key={v.zone.id}
+              role="tab"
+              aria-selected={zone === v.zone.id}
+              className={`zone-tab ${zone === v.zone.id ? 'active' : ''}`}
+              disabled={blocked}
+              onClick={() => setZone(v.zone.id)}
+              style={{ '--zone': m.hue }}
+            >
+              <span className="zt-name">{m.name}</span>
+              <span className="zt-note">{note}</span>
+              <HealthBar bps={v.health_bps} />
+            </button>
+          );
+        })}
+      </div>
+      )}
+      {part !== 'tabs' && cur && meta && (
+        <p className="zone-detail">
+          {list} live here. The license is <b className="brass">{yoctoToNearFine(cur.fee_per_fish)} NEAR</b> a fish
+          {meta.bait ? <>, and each fish needs one {FISH[meta.bait].name.toLowerCase()} or better as bait{who && <> (you have {held[meta.bait] || 0})</>}</> : ''}.
+          {' '}{cur.zone.steward ? <>Harbor master: {short(cur.zone.steward)}.</> : 'No harbor master yet.'}
+        </p>
+      )}
+      {part !== 'tabs' && anyClosed && (
+        <label className="poach">
+          <input type="checkbox" checked={poach} onChange={(e) => setPoach?.(e.target.checked)} disabled={!who} />
+          <span>Poach closed zones. Fish bite better there, but the warden chases you off 3 casts in 10, and every
+            poached fish pays its harbor master a fine of three licenses.</span>
+        </label>
+      )}
     </div>
-    </>
   );
 }
 

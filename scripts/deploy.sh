@@ -43,9 +43,9 @@ for spec in "guppy Guppy 0 0" "tilapia Tilapia 1 0" "snapper Snapper 2 2" "tuna 
 done
 
 echo "==> zones + bait"
-$N call "$C" register_zone '{"id":"shallows","name":"Shallows","capacity":600,"regen_per_hour":90,"base_fee":"500000000000000000000","min_rod":0}' --accountId "$C"
-$N call "$C" register_zone '{"id":"reef","name":"Coral Reef","capacity":300,"regen_per_hour":40,"base_fee":"5000000000000000000000","min_rod":1}' --accountId "$C"
-$N call "$C" register_zone '{"id":"abyss","name":"The Abyss","capacity":120,"regen_per_hour":12,"base_fee":"15000000000000000000000","min_rod":2}' --accountId "$C"
+$N call "$C" register_zone '{"id":"shallows","name":"Shallows","capacity":600,"regen_per_hour":90,"base_fee":"8000000000000000000000","min_rod":0}' --accountId "$C"
+$N call "$C" register_zone '{"id":"reef","name":"Coral Reef","capacity":300,"regen_per_hour":40,"base_fee":"40000000000000000000000","min_rod":1}' --accountId "$C"
+$N call "$C" register_zone '{"id":"abyss","name":"The Abyss","capacity":120,"regen_per_hour":12,"base_fee":"70000000000000000000000","min_rod":2}' --accountId "$C"
 $N call "$C" set_zone_bait '{"zone_id":"reef","item_id":"guppy"}' --accountId "$C"
 $N call "$C" set_zone_bait '{"zone_id":"abyss","item_id":"tilapia"}' --accountId "$C"
 

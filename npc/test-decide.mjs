@@ -7,7 +7,8 @@
  *   node npc/test-decide.mjs
  */
 
-import { decide as decideWithRoles, fairPriceOf, PERSONALITIES, ROLES, planOrder, planOrders, SHOP_MARGIN_BPS } from './decide.mjs';
+import { decide as decideWithRoles, fairPriceOf, PERSONALITIES, ROLES, planOrder, planOrders, SHOP_MARGIN_BPS, MIN_SHOP_MARGIN_BPS, SHELF_CAP, shopMarginBps, boundPlan } from './decide.mjs';
+import { sanitizePlan, rulesNote } from './brain.mjs';
 // The personality tests below exercise tolerance and reserve logic on a
 // generic item, so they run without roles. Roles have their own tests.
 const decide = (a, b, c, d) => decideWithRoles(a, b, c, d, {});
@@ -354,6 +355,84 @@ check(
   planOrders('bob', richNpc('bob'), [asItem('guppy')], 'calm', [], 1)[0].price
     <= (BigInt(fairPriceOf(asItem('guppy'))) * 10_500n) / 10_000n
 );
+
+// ------------------------------------------------------- caps and demand
+const withStock = (id, item, units, cost = '11000') => ({ ...richNpc(id), inventory: [{ item_id: item, units, unit_cost: cost }], asks: [] });
+check(
+  'a full shelf stops the standing order',
+  !planOrders('bob', withStock('bob', 'guppy', SHELF_CAP.bob.guppy), allFish, 'calm', [], 5).some((o) => o.itemId === 'guppy')
+);
+check(
+  'a part-full shelf only orders the room left',
+  (planOrders('bob', withStock('bob', 'guppy', SHELF_CAP.bob.guppy - 4), allFish, 'calm', [], 5).find((o) => o.itemId === 'guppy')?.units) === 4
+);
+check(
+  'with no recent sales a shop orders small',
+  planOrders('bob', richNpc('bob'), allFish, 'calm', [], 5, {}, { sold: {} }).find((o) => o.itemId === 'guppy')?.units === 5
+);
+check(
+  'a shop that sells more orders more, up to its plan',
+  planOrders('bob', richNpc('bob'), allFish, 'calm', [], 5, {}, { sold: { guppy: 12 } }).find((o) => o.itemId === 'guppy')?.units === 18
+);
+check(
+  'the margin slides from 12% to 4% as the shelf fills',
+  shopMarginBps(5, 30) === SHOP_MARGIN_BPS && shopMarginBps(30, 30) === MIN_SHOP_MARGIN_BPS
+    && shopMarginBps(22, 30) < SHOP_MARGIN_BPS && shopMarginBps(22, 30) > MIN_SHOP_MARGIN_BPS
+);
+check(
+  'a full shelf still never sells below cost',
+  (() => {
+    const item = asItem('guppy');
+    const d = decideWithRoles('bob', withStock('bob', 'guppy', 30, '20000'), [item], []);
+    return d.action === 'SELL' && BigInt(d.askPrice) >= (20000n * (10_000n + MIN_SHOP_MARGIN_BPS)) / 10_000n;
+  })()
+);
+check(
+  'the AI can lower a size but never raise it past the bounds',
+  boundPlan('bob', richNpc('bob'), { item: 'guppy', units: 20, premiumBps: 500n, budgetBps: 1_500n, standing: true }, { guppy: 2 }, { guppy: { units: 999, premiumBps: 9999 } }).units === 5
+    && boundPlan('bob', richNpc('bob'), { item: 'guppy', units: 20, premiumBps: 500n, budgetBps: 1_500n, standing: true }, null, { guppy: { units: 7, premiumBps: 9999 } }).premiumBps === 2_000n
+);
+
+check(
+  'a full shelf stops an NPC buying listings of that fish',
+  (() => {
+    const item = asItem('guppy');
+    const busy = { ...item, player_buy_volume: 5 };
+    const listing = [[7, { seller: 'p.testnet', item_id: 'guppy', units: 3, ask_price: String(fairPriceOf(busy)), active: true }]];
+    // Stock bought cheaply, with its shelf ask already posted, so the SELL
+    // branch has nothing to do and the BUY branch is what is tested.
+    const ask = (BigInt(fairPriceOf(busy)) * 11_000n) / 10_000n;
+    const shelf = (n) => ({ ...withStock('bob', 'guppy', n, '1'), asks: [['guppy', String(ask)]] });
+    const full = decideWithRoles('bob', shelf(SHELF_CAP.bob.guppy), [busy], listing);
+    const room = decideWithRoles('bob', shelf(SHELF_CAP.bob.guppy - 1), [busy], listing);
+    return full.action !== 'BUY' && room.action === 'BUY' && room.units === 1;
+  })()
+);
+check(
+  'an NPC skips listings past their 30-minute life',
+  (() => {
+    const item = { ...asItem('guppy'), player_buy_volume: 5 };
+    const old = String(BigInt(Date.now() - 40 * 60_000) * 1_000_000n);
+    const listing = [[7, { seller: 'p.testnet', item_id: 'guppy', units: 3, ask_price: String(fairPriceOf(item)), created_ns: old, active: true }]];
+    return decideWithRoles('bob', richNpc('bob'), [item], listing).action !== 'BUY';
+  })()
+);
+
+// ------------------------------------------------------------ AI parsing
+check(
+  'an AI plan is parsed from text and clamped to the NPC\'s own items',
+  (() => {
+    const raw = 'Sure! {"orders":{"guppy":{"premium_bps":800,"units":12},"koi":{"premium_bps":100,"units":3}},"note":"Bait shelf is low, paying a little more for guppy."}';
+    const p = sanitizePlan(raw, ['guppy', 'tilapia', 'tuna']);
+    return p && p.orders.guppy.premiumBps === 800 && p.orders.guppy.units === 12 && !p.orders.koi && p.note.startsWith('Bait shelf');
+  })()
+);
+check('garbage from the AI is rejected', sanitizePlan('no json here', ['guppy']) === null);
+check(
+  'AI notes are cut to one short line',
+  (() => { const p = sanitizePlan(JSON.stringify({ orders: {}, note: 'a\nb ' + 'x'.repeat(400) }), ['guppy']); return p.note.length <= 200 && !p.note.includes('\n'); })()
+);
+check('the rule fallback writes a note too', rulesNote('bob', withStock('bob', 'guppy', 12), 'calm').length > 10);
 
 // --------------------------------------------------------------- summary
 
