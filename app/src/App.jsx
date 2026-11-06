@@ -3,7 +3,7 @@ import { connect, disconnect, restoreSession, onAccountChange, getWallet } from 
 import { view, call, callMany, post, txHash, CONTRACT, yoctoToNear, nearToYocto, explain } from './contract';
 import { BAIT, FISH, RODS, ROD_IDS, ZONES, baitTier, floodAfter, formatWeight, vaultBidBps, wearOf } from './game';
 import { ZonePicker, StewardPanel, BaitShop } from './Zones';
-import { RecordsPanel, TrophyRoom, TournamentPanel, SeasonBanner, FishdexPanel } from './Endgame';
+import { RecordsPanel, TrophyRoom, TournamentPanel, SeasonBanner, FishdexPanel, StandingCard, WeekBoards } from './Endgame';
 import { Fishing } from './Fishing';
 import { Market, NpcNote } from './Market';
 import { isMuted, setMuted, onMuteChange } from './sound';
@@ -176,6 +176,9 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
   const [boards, setBoards] = useState([[], []]);
   const [tourney, setTourney] = useState({ current: null, previous: null, entered: false });
   const [dex, setDex] = useState(null);
+  // This week across every board: mine, and the open top-10 boards.
+  const [myWeek, setMyWeek] = useState(null);
+  const [weekBoards, setWeekBoards] = useState(null);
   const [docks, setDocks] = useState({});
   const [crews, setCrews] = useState({});
   const [poach, setPoach] = useState(false);
@@ -242,8 +245,10 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
         setBests(Object.fromEntries(p.bests.map(([i, n]) => [i, Number(n)])));
         setMine({ trophies: Number(p.trophies), discount: Number(p.discount_bps) });
         setDex(p.fishdex);
-      }
+        setMyWeek(p.week || null);
+      } else setMyWeek(null);
       setTourney({ current: w.tournament, previous: w.last_tournament, entered: !!p?.entered_this_week });
+      view('week_boards', {}).then(setWeekBoards).catch(() => {});
     } catch { /* offline, keep last values */ }
   }, [who]);
 
@@ -743,9 +748,11 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
         <div className="page">
           <header className="page-head">
             <h1>Ranks</h1>
-            <p>The weekly tournament, the heaviest fish ever landed, and the koi on everyone's wall.</p>
+            <p>Where you stand this week, the tournament, the heaviest fish ever landed, and the koi on everyone's wall.</p>
           </header>
+          <StandingCard who={who} week={myWeek} current={tourney.current} dex={dex} bests={bests} records={records} trophies={mine.trophies} releases={(boards?.[1] || []).find(([a]) => a === who)?.[1]} />
           <TournamentPanel who={who} current={tourney.current} previous={tourney.previous} entered={tourney.entered} busy={busy} run={run} />
+          <WeekBoards who={who} boards={weekBoards} week={myWeek} />
           <RecordsPanel records={records} bests={bests} who={who} />
           <TrophyRoom who={who} koi={held.koi || 0} trophies={mine.trophies} discountBps={mine.discount} boards={boards} zones={zones} busy={busy} run={run} />
           <FishdexPanel dex={dex} who={who} />

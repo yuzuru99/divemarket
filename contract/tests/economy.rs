@@ -2251,6 +2251,60 @@ fn the_vault_pays_less_for_a_fish_it_bought_a_lot_of_today() {
     assert_eq!(c.vault_bid_bps_of("guppy".into()).0, c.vault_bid_bps());
 }
 
+#[test]
+fn every_entrant_shows_in_the_zone_standings_and_their_own_week() {
+    let mut c = market();
+    signer_on(&mut c);
+    let week = T0 / WEEK_NS;
+    for who in [PLAYER, BUYER] {
+        testing_env!(ctx_pay(who, TOURNAMENT_TICKET, T0));
+        c.enter_tournament();
+    }
+    testing_env!(ctx_pay(PLAYER, ONE_NEAR, T0));
+    c.claim_catches(vec![receipt_w(PLAYER, "shallows", "guppy", 70), receipt_w(PLAYER, "shallows", "guppy", 60)]);
+    testing_env!(ctx_pay(BUYER, ONE_NEAR, T0));
+    c.claim_catches(vec![receipt_w(BUYER, "shallows", "guppy", 90)]);
+    testing_env!(ctx_pay("outsider.near", ONE_NEAR, T0));
+    c.claim_catches(vec![receipt_w("outsider.near", "shallows", "guppy", 999)]);
+
+    let top = c.standings(week, "shallows".into());
+    let names: Vec<(String, u64)> = top.iter().map(|(a, g, _)| (a.to_string(), *g)).collect();
+    assert_eq!(names, vec![(BUYER.to_string(), 90), (PLAYER.to_string(), 70)], "entrants only, best fish each, heaviest first");
+    assert_eq!(c.tournament(week).standings.iter().find(|(z, _)| z == "shallows").unwrap().1.len(), 2);
+
+    let mine = c.my_week(PLAYER.parse().unwrap());
+    assert!(mine.entered);
+    assert_eq!(mine.zones, vec![("shallows".to_string(), 70, "guppy".to_string(), Some(2))]);
+    assert_eq!(mine.catches, 2, "both fish count toward the catches board");
+    let outsider = c.my_week("outsider.near".parse().unwrap());
+    assert!(!outsider.entered && outsider.zones.is_empty(), "no ticket, no standings");
+    assert_eq!(outsider.catches, 1, "but everyone counts on the catches board");
+
+    let boards = c.week_boards();
+    assert_eq!(boards.catches[0], (PLAYER.parse().unwrap(), 2));
+    assert_eq!(boards.catches.len(), 3);
+}
+
+#[test]
+fn the_traders_board_counts_near_earned_selling_fish() {
+    let mut c = market();
+    testing_env!(ctx(OWNER));
+    c.fund_vault(U128(100 * ONE_NEAR));
+    testing_env!(ctx(PLAYER));
+    let (pk, sig, nonce) = sign_catch(PLAYER, "guppy", 10);
+    testing_env!(ctx(OWNER));
+    c.set_game_signer(pk.to_string());
+    testing_env!(ctx(PLAYER));
+    c.catch_fish("guppy".into(), 10, nonce, sig.to_string());
+    let before = c.vault_balance().0;
+    c.sell_to_market("guppy".into(), 4);
+    let paid = before - c.vault_balance().0;
+    let me = c.my_week(PLAYER.parse().unwrap());
+    assert_eq!(me.earned.0, paid);
+    assert_eq!(me.earned_rank, Some(1));
+    assert_eq!(c.week_boards().earned, vec![(PLAYER.parse().unwrap(), U128(paid))]);
+}
+
 // ================================================================ tournament
 
 #[test]

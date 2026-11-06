@@ -405,12 +405,38 @@ pub struct PlayerState {
     pub discount_bps: u128,
     pub entered_this_week: bool,
     pub fishdex: FishdexView,
+    pub week: MyWeek,
 }
 
 #[near(serializers = [json])]
 pub struct FishdexView {
     pub caught: Vec<String>,
     pub complete: bool,
+}
+
+/// How many places each weekly board keeps.
+pub const STANDINGS_TOP: usize = 10;
+
+/// One angler's week, for the "Your standing" card. Ranks are 1-based and
+/// only known inside the top 10 of each board.
+#[near(serializers = [json])]
+pub struct MyWeek {
+    pub week: u64,
+    pub entered: bool,
+    /// (zone, heaviest grams this week, fish, rank in that zone's standings)
+    pub zones: Vec<(String, u64, String, Option<u32>)>,
+    pub catches: u64,
+    pub catches_rank: Option<u32>,
+    pub earned: U128,
+    pub earned_rank: Option<u32>,
+}
+
+/// This week's open boards: most fish landed and most NEAR earned selling.
+#[near(serializers = [json])]
+pub struct WeekBoards {
+    pub week: u64,
+    pub catches: Vec<(AccountId, u64)>,
+    pub earned: Vec<(AccountId, U128)>,
 }
 
 /// A weekly tournament as the UI sees it.
@@ -423,6 +449,8 @@ pub struct TournamentView {
     pub settled: bool,
     /// (zone, weight in grams, holder, fish) for each zone with a leader.
     pub leaders: Vec<(String, u64, AccountId, String)>,
+    /// Top 10 entrants per zone: (zone, [(angler, grams, fish)]).
+    pub standings: Vec<(String, Vec<(AccountId, u64, String)>)>,
 }
 
 #[near(serializers = [borsh, json])]
@@ -559,6 +587,12 @@ enum StorageKey {
     NoteLog,
     Released,
     VaultDay,
+    TourneyBest,
+    TourneyTop,
+    WeekCatches,
+    WeekCatchTop,
+    WeekEarned,
+    WeekEarnTop,
 }
 
 /// How rare an item is. Rarity is not cosmetic: it sets the base price, and
@@ -1392,6 +1426,7 @@ impl Contract {
 
             self.record_weight(&player, &r.item_id, &r.zone_id, r.weight_g, if entered { Some(week) } else { None });
             self.mark_fishdex(&player, &r.item_id);
+            self.count_week_catches(&player, r.units);
         }
         for z in touched.iter() {
             zones.insert(&z.id, z);
@@ -1606,6 +1641,105 @@ impl Contract {
             if weight > lm.get(&lk).map(|(g, _, _)| g).unwrap_or(0) {
                 lm.insert(&lk, &(weight, player.clone(), item.to_string()));
             }
+            // Every entrant's best in the zone this week, and the zone's top 10.
+            let bk = (w, zone.to_string(), player.clone());
+            let mut bm = Self::tourney_best_map();
+            if weight > bm.get(&bk).map(|(g, _)| g).unwrap_or(0) {
+                bm.insert(&bk, &(weight, item.to_string()));
+                let mut tm = Self::tourney_top_map();
+                let mut top = tm.get(&lk).unwrap_or_default();
+                top.retain(|(a, _, _)| a != player);
+                top.push((player.clone(), weight, item.to_string()));
+                top.sort_by(|a, b| b.1.cmp(&a.1));
+                top.truncate(STANDINGS_TOP);
+                tm.insert(&lk, &top);
+            }
+        }
+    }
+
+    // ------------------------------------------------------ weekly boards
+
+    fn tourney_best_map() -> LookupMap<(u64, String, AccountId), (u64, String)> { LookupMap::new(StorageKey::TourneyBest) }
+    fn tourney_top_map() -> LookupMap<(u64, String), Vec<(AccountId, u64, String)>> { LookupMap::new(StorageKey::TourneyTop) }
+    fn week_catches_map() -> LookupMap<(u64, AccountId), u64> { LookupMap::new(StorageKey::WeekCatches) }
+    fn week_catch_top_map() -> LookupMap<u64, Vec<(AccountId, u64)>> { LookupMap::new(StorageKey::WeekCatchTop) }
+    fn week_earned_map() -> LookupMap<(u64, AccountId), u128> { LookupMap::new(StorageKey::WeekEarned) }
+    fn week_earn_top_map() -> LookupMap<u64, Vec<(AccountId, u128)>> { LookupMap::new(StorageKey::WeekEarnTop) }
+
+    fn bump_week_top<V: Copy + Ord + near_sdk::borsh::BorshSerialize + near_sdk::borsh::BorshDeserialize>(
+        m: &mut LookupMap<u64, Vec<(AccountId, V)>>, week: u64, who: &AccountId, score: V,
+    ) {
+        let mut top = m.get(&week).unwrap_or_default();
+        top.retain(|(a, _)| a != who);
+        top.push((who.clone(), score));
+        top.sort_by(|a, b| b.1.cmp(&a.1));
+        top.truncate(STANDINGS_TOP);
+        m.insert(&week, &top);
+    }
+
+    fn count_week_catches(&mut self, player: &AccountId, units: u64) {
+        let week = env::block_timestamp() / WEEK_NS;
+        let k = (week, player.clone());
+        let mut m = Self::week_catches_map();
+        let n = m.get(&k).unwrap_or(0) + units;
+        m.insert(&k, &n);
+        Self::bump_week_top(&mut Self::week_catch_top_map(), week, player, n);
+    }
+
+    /// NEAR a player receives for fish, counted toward this week's traders
+    /// board. NPC accounts are not players and are skipped.
+    fn credit_earning(&mut self, who: &AccountId, yocto: u128) {
+        if yocto == 0 || self.npcs.values().any(|n| n.name == who.as_str()) {
+            return;
+        }
+        let week = env::block_timestamp() / WEEK_NS;
+        let k = (week, who.clone());
+        let mut m = Self::week_earned_map();
+        let n = m.get(&k).unwrap_or(0) + yocto;
+        m.insert(&k, &n);
+        Self::bump_week_top(&mut Self::week_earn_top_map(), week, who, n);
+    }
+
+    /// Top 10 tournament entrants in a zone for a week: (angler, grams, fish).
+    pub fn standings(&self, week: u64, zone_id: String) -> Vec<(AccountId, u64, String)> {
+        Self::tourney_top_map().get(&(week, zone_id)).unwrap_or_default()
+    }
+
+    /// This week's most fish landed and most NEAR earned selling, top 10 each.
+    pub fn week_boards(&self) -> WeekBoards {
+        let week = env::block_timestamp() / WEEK_NS;
+        WeekBoards {
+            week,
+            catches: Self::week_catch_top_map().get(&week).unwrap_or_default(),
+            earned: Self::week_earn_top_map().get(&week).unwrap_or_default().into_iter().map(|(a, v)| (a, U128(v))).collect(),
+        }
+    }
+
+    /// One player's week across every board.
+    pub fn my_week(&self, player: AccountId) -> MyWeek {
+        let week = env::block_timestamp() / WEEK_NS;
+        let rank_of = |pos: Option<usize>| pos.map(|i| i as u32 + 1);
+        let bm = Self::tourney_best_map();
+        let zones = Self::zone_ids()
+            .into_iter()
+            .filter_map(|z| {
+                bm.get(&(week, z.clone(), player.clone())).map(|(g, item)| {
+                    let top = self.standings(week, z.clone());
+                    let r = rank_of(top.iter().position(|(a, _, _)| a == &player));
+                    (z, g, item, r)
+                })
+            })
+            .collect();
+        let catches_top = Self::week_catch_top_map().get(&week).unwrap_or_default();
+        let earn_top = Self::week_earn_top_map().get(&week).unwrap_or_default();
+        MyWeek {
+            week,
+            entered: Self::entrants_map().get(&(week, player.clone())).is_some(),
+            zones,
+            catches: Self::week_catches_map().get(&(week, player.clone())).unwrap_or(0),
+            catches_rank: rank_of(catches_top.iter().position(|(a, _)| a == &player)),
+            earned: U128(Self::week_earned_map().get(&(week, player.clone())).unwrap_or(0)),
+            earned_rank: rank_of(earn_top.iter().position(|(a, _)| a == &player)),
         }
     }
 
@@ -1861,6 +1995,7 @@ impl Contract {
             // Rounding dust goes back to the NPC.
             self.close_order_key(&key);
         }
+        self.credit_earning(&me, pay);
         Promise::new(me).transfer(NearToken::from_yoctonear(pay))
     }
 
@@ -1967,7 +2102,8 @@ impl Contract {
             releases: self.releases_of(player.clone()),
             discount_bps: self.trophy_discount_bps(&player),
             entered_this_week: self.is_entered(player.clone(), self.current_week()),
-            fishdex: self.fishdex(player),
+            fishdex: self.fishdex(player.clone()),
+            week: self.my_week(player),
         }
     }
 
@@ -2014,6 +2150,7 @@ impl Contract {
             entrants,
             settled: Self::settled_map().get(&week).is_some(),
             leaders,
+            standings: Self::zone_ids().into_iter().map(|z| { let t = self.standings(week, z.clone()); (z, t) }).collect(),
         }
     }
 
@@ -2469,6 +2606,7 @@ impl Contract {
         if attached > cost {
             let _ = Promise::new(buyer).transfer(NearToken::from_yoctonear(attached - cost));
         }
+        self.credit_earning(&listing.seller, cost);
         let _ = Promise::new(listing.seller).transfer(NearToken::from_yoctonear(cost));
     }
 
@@ -2675,6 +2813,7 @@ impl Contract {
             at_ns: env::block_timestamp(),
         });
 
+        self.credit_earning(&player, cost);
         let _ = Promise::new(player).transfer(NearToken::from_yoctonear(cost));
     }
 
@@ -2938,6 +3077,7 @@ impl Contract {
             "the contract cannot cover this payout right now"
         );
 
+        self.credit_earning(&listing.seller, cost);
         Promise::new(listing.seller).transfer(NearToken::from_yoctonear(cost))
     }
 

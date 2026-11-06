@@ -145,7 +145,8 @@ NPC investors, never by newly created NEAR.
 | Trophies | `mount_trophy` (−5% license each, max −50%) or `release_koi` (+20 fish to a zone) |
 | Release | `release_fish(zone_id, item_id, units)`: guppy, tilapia, snapper or tuna go back into a zone they live in (up to its room, 100 at a time); the Conservationists board ranks fish restocked |
 | Vault flood | `vault_bid_bps_of(item_id)`, `vault_sold_today(item_id)`, `vault_bids()` (also in `world_state`) |
-| Tournament | `enter_tournament`, `settle_tournament(week)` — anyone can pay out a finished week |
+| Tournament | `enter_tournament`, `settle_tournament(week)` — anyone can pay out a finished week. `standings(week, zone)` lists every entrant's heaviest fish per zone (top 10) |
+| Weekly boards | `week_boards()`: most fish landed and most NEAR earned selling this week, top 10 each, open to everyone. `my_week(player)` (also in `player_state`) gives one angler's place on every board for the Ranks page's "Your standing" card |
 | Seasons | `current_season` = week number mod 4; the game server and NPCs use the same formula |
 | Docks | `build_dock`: harbor master burns 20 snapper, zone capacity +10% (max 10 docks) |
 | Player market | `list_fair` puts fish up for 30 minutes; `buy_listing(index, units, max_price)` lets another player buy them, paid straight to the seller; NPCs buy from the same listings when the price suits them |
@@ -206,7 +207,7 @@ browser (React, app/)          game server (Vercel functions, app/api/)     NEAR
 ```
 contract/            Rust contract (near-sdk 5)
   src/lib.rs         economy, zones, rods, NPCs, orders, tournament, records, crew
-  tests/economy.rs   137 tests
+  tests/economy.rs   139 tests
 app/                 React game + Vercel functions
   src/               game.js (rules shared with the server), Fishing.jsx (scene),
                      Market.jsx, Zones.jsx, Endgame.jsx, App.jsx
@@ -224,7 +225,7 @@ scripts/             deploy.sh (fresh economy), vercel-env.sh (server secrets),
 
 ```bash
 # contract
-cargo test                                   # 137 tests
+cargo test                                   # 139 tests
 cargo build --target wasm32-unknown-unknown --release
 # .cargo/config.toml adds `--cfg near`: without it near-sdk 5.30 compiles every
 # require!/panic into a bare "unreachable" trap and errors lose their message.

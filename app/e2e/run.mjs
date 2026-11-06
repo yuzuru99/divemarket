@@ -261,6 +261,17 @@ if (bam && bam.left < bam.durability) {
   });
 } else rec('repair the Bamboo Rod', true, 'skipped: not worn');
 
+// ---- ranks: the connected angler always sees where they stand
+await page.getByRole('button', { name: 'Ranks', exact: true }).click();
+await page.locator('.standing-card').waitFor({ timeout: 20000 }).catch(() => {});
+{
+  const mine = await view('my_week', { player: P });
+  const card = (await page.locator('.standing-card').textContent().catch(() => '')) || '';
+  const shows = card.includes('Your standing') && card.includes(`${Number(mine.catches)}`);
+  rec('ranks: your standing shows this week', shows, `catches ${mine.catches}, entered ${mine.entered}`);
+  if (process.env.SHOT_DIR) await page.screenshot({ path: `${process.env.SHOT_DIR}/ranks.png`, fullPage: true });
+}
+
 rec('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 await browser.close();
 const failed = results.filter((r) => !r.ok);
