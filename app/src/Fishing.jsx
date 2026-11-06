@@ -10,8 +10,9 @@
  *         -> reveal -> idle
  */
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { FISH, RODS, ZONES, formatWeight } from './game';
+import { FISH, RODS, ZONES, formatWeight, zonePool } from './game';
 import { sfx, unlock } from './sound';
+import { drawFish, landedLength, SPECIES } from './fishArt';
 
 // The scene is drawn in its own units and scaled to fit. A wide screen gets a
 // wide sea; a phone gets a tall one, so the water fills the screen instead of
@@ -68,16 +69,52 @@ function makeScene() {
     rain: Array.from({ length: 140 }, () => ({ x: rand(0, W), y: rand(0, H), v: rand(9, 14) })),
     flash: 0,
     nextFlash: 0,
-    ambient: Array.from({ length: 9 }, () => ({
-      x: rand(0, W), y: rand(SURFACE + 60, H - 50), size: rand(7, 16),
-      vx: (Math.random() > 0.5 ? 1 : -1) * rand(0.25, 0.7), phase: rand(0, 6.28),
-    })),
+    // The fish you can see swimming: restocked from the zone's own pool
+    // whenever the zone or season changes (see `stockSea`).
+    ambient: [],
+    school: null,
+    stockedFor: '',
+    motes: Array.from({ length: 34 }, () => ({ x: rand(0, W), y: rand(SURFACE + 10, H), r: rand(0.6, 1.6), p: rand(0, 6.28), v: rand(0.03, 0.12) })),
+    stars5: Array.from({ length: 3 }, () => ({ x: rand(40, W - 40), r: rand(7, 11), rot: rand(0, 6.28), hue: ['#ff8a5c', '#ffb347', '#ff6f8a'][Math.floor(rand(0, 3))] })),
+    shells: Array.from({ length: 4 }, () => ({ x: rand(30, W - 30), r: rand(5, 8), rot: rand(-0.4, 0.4) })),
+    anemones: Array.from({ length: Math.ceil(W / 240) }, (_, i) => ({ x: 90 + i * 240 + rand(-40, 40), r: rand(12, 18), hue: ['#ff9ec7', '#c39bff', '#7fe0c8'][i % 3], p: rand(0, 6.28) })),
+    jellies: Array.from({ length: 3 }, () => ({ x: rand(60, W - 60), y: rand(SURFACE + 90, H - 120), r: rand(10, 16), p: rand(0, 6.28), v: rand(0.08, 0.18) })),
     bubbles: Array.from({ length: 22 }, () => ({ x: rand(0, W), y: rand(SURFACE, H), r: rand(1, 3), v: rand(0.2, 0.6) })),
     weeds: Array.from({ length: Math.ceil(W / 68) }, (_, i) => ({ x: 30 + i * 68 + rand(-18, 18), h: rand(40, 90), phase: rand(0, 6.28) })),
     particles: [],
     ripples: [],
     shake: 0,
   };
+}
+
+/** Pick a fish from a zone's pool, weighted like the real roll (for looks only). */
+function pickFish(zone, season) {
+  const pool = zonePool(zone, season);
+  const ids = Object.keys(pool);
+  let r = Math.random() * ids.reduce((a, id) => a + pool[id], 0);
+  for (const id of ids) { r -= pool[id]; if (r <= 0) return id; }
+  return ids[0];
+}
+
+/** Fill the water with the zone's own fish: each kind swims its own way. */
+function stockSea(scene, zone, season) {
+  const pool = zonePool(zone, season);
+  const ids = Object.keys(pool);
+  const n = W < 700 ? 6 : 8;
+  scene.ambient = Array.from({ length: n }, (_, i) => {
+    // every kind in the pool shows at least once, the rest by weight
+    const id = i < ids.length ? ids[i] : pickFish(zone, season);
+    const sp = SPECIES[id];
+    const y = rand(SURFACE + 60, H - 60);
+    const depth = (y - SURFACE) / (H - SURFACE);
+    const fast = id === 'tuna' ? rand(1.3, 2.1) : id === 'koi' ? rand(0.22, 0.35) : id === 'guppy' ? rand(0.6, 0.9) : rand(0.3, 0.6);
+    return { id, x: rand(0, W), y, len: sp.px * rand(0.75, 1.02) * (1 - depth * 0.22), vx: (Math.random() > 0.5 ? 1 : -1) * fast, phase: rand(0, 6.28), depth };
+  });
+  scene.school = pool.guppy
+    ? { x: rand(0, W), y: rand(SURFACE + 70, H - 110), vx: rand(0.7, 1.0) * (Math.random() > 0.5 ? 1 : -1),
+        members: Array.from({ length: 7 }, () => ({ dx: rand(-40, 40), dy: rand(-18, 18), p: rand(0, 6.28) })) }
+    : null;
+  scene.stockedFor = `${zone}:${season}`;
 }
 
 function splash(scene, x, y, n, color = 'rgba(186,230,253,0.9)') {
@@ -107,7 +144,7 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
   apiRef.current = api;
   const lookRef = useRef(null);
   const base = LOOKS[zone] || LOOKS.shallows;
-  lookRef.current = { ...base, ...(season === 'storm' ? STORM : {}), storm: season === 'storm', zone };
+  lookRef.current = { ...base, ...(season === 'storm' ? STORM : {}), storm: season === 'storm', zone, season };
   onResultRef.current = onResult;
 
   if (!sceneRef.current) sceneRef.current = makeScene();
@@ -132,6 +169,7 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
     ctx.fillStyle = '#061726';
     ctx.fillRect(-20, -20, W + 40, H + 40);
     const look = lookRef.current;
+    if (scene.stockedFor !== `${look.zone}:${look.season}`) stockSea(scene, look.zone, look.season);
     drawSky(ctx, t, scene, look);
     drawWater(ctx, t, scene, look);
     const tip = drawBoat(ctx, t, c, look);
@@ -171,12 +209,24 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
       c.bobber = { x: base.x, y: base.y + Math.sin(t * 0.004) * 1.5 };
       line(ctx, tip, c.bobber, 0.5);
       if (c.server) {
-        // A shadow circles in as the bite approaches: tension, not a timer.
+        // A fish circles in as the bite approaches: tension, not a timer.
+        // What it looks like is only a guess; the server decides the catch.
         const left = Math.max(0, c.biteShowAt - t);
         const k = 1 - Math.min(1, left / c.server.biteDelay);
-        const ang = t * 0.002;
-        const dist = 160 * (1 - k) + 18;
-        shadowFish(ctx, base.x + Math.cos(ang) * dist, base.y + 46 + Math.sin(ang) * 18 * (1 - k), 18, 0.18 + 0.25 * k, Math.cos(ang) > 0 ? -1 : 1);
+        const ang = t * 0.0021;
+        const dist = 170 * (1 - k) + 22;
+        const fx = base.x + Math.cos(ang) * dist, fy = base.y + 48 + Math.sin(ang) * 20 * (1 - k);
+        const heading = -Math.sin(ang) > 0 ? 1 : -1;
+        drawFish(ctx, c.approach, fx, fy, SPECIES[c.approach].px * 0.85, t, { dir: heading, silhouette: true, alpha: 0.3 + 0.45 * k, phase: 1 });
+        // Two nibbles before the real bite: the bobber twitches.
+        for (const at of [0.58, 0.82]) {
+          if (k >= at && !c.nibbled?.includes(at)) {
+            c.nibbled = [...(c.nibbled || []), at];
+            c.nibbleAt = t;
+            scene.ripples.push({ x: base.x, y: base.y, r: 3, life: 0.7 });
+          }
+        }
+        if (c.nibbleAt && t - c.nibbleAt < 240) c.bobber.y += Math.sin(((t - c.nibbleAt) / 240) * Math.PI) * 5;
         if (left <= 0) {
           c.phase = 'bite';
           c.biteAt = t;
@@ -218,11 +268,13 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
       const k = Math.min(1, (t - c.reelAt) / REEL_MS);
       const e = ease(k);
       const f = FISH[c.result.fish];
+      const len = landedLength(c.result.fish, c.result.weight || f.minG, f.minG, f.maxG);
       const from = { x: base.x, y: base.y + 30 };
-      const pos = { x: from.x + (tip.x - from.x) * e, y: from.y + (tip.y + 34 - from.y) * e - Math.sin(k * Math.PI) * 40 };
+      const pos = { x: from.x + (tip.x - from.x) * e, y: from.y + (tip.y + len * 0.5 - from.y) * e - Math.sin(k * Math.PI) * 40 };
       line(ctx, tip, pos, 1);
-      if (Math.random() < 0.4) scene.particles.push({ x: pos.x, y: pos.y, vx: rand(-0.5, 0.5), vy: rand(0, 1), life: 0.7, color: 'rgba(186,230,253,0.8)', r: 1.5 });
-      fishSprite(ctx, pos.x, pos.y, f.size, f.color, t, Math.PI / 2 * 0.8 + Math.sin(t * 0.03) * 0.5);
+      if (Math.random() < 0.5) scene.particles.push({ x: pos.x + rand(-len * 0.2, len * 0.2), y: pos.y, vx: rand(-0.8, 0.8), vy: rand(0, 1), life: 0.7, color: 'rgba(186,230,253,0.85)', r: rand(1.2, 2.4) });
+      // hooked by the mouth: nose up, thrashing
+      drawFish(ctx, c.result.fish, pos.x, pos.y, len, t, { angle: -Math.PI / 2 + Math.sin(t * 0.028) * 0.45, speed: 2.6, glow: f.rarity === 'legendary' || f.rarity === 'epic' });
       if (k >= 1) {
         c.phase = 'reveal';
         c.revealAt = t;
@@ -234,7 +286,7 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
 
     if (c.phase === 'escaped') {
       const k = Math.min(1, (t - c.escapeAt) / 900);
-      shadowFish(ctx, base.x + k * 420 * c.dir, base.y + 40 + k * 60, 20, 0.35 * (1 - k), c.dir);
+      drawFish(ctx, c.approach || 'guppy', base.x + k * 420 * c.dir, base.y + 40 + k * 60, SPECIES[c.approach || 'guppy'].px * 0.85, t, { dir: c.dir, silhouette: true, alpha: 0.5 * (1 - k), speed: 2.5 });
       line(ctx, tip, { x: base.x, y: base.y }, 0.3);
       if (k >= 1) { c.phase = 'reveal'; c.revealAt = t; }
       return;
@@ -243,7 +295,8 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
     if (c.phase === 'reveal') {
       if (c.result?.hit) {
         const f = FISH[c.result.fish];
-        fishSprite(ctx, tip.x, tip.y + 34, f.size, f.color, t, Math.PI / 2 * 0.8 + Math.sin(t * 0.02) * 0.2);
+        const len = landedLength(c.result.fish, c.result.weight || f.minG, f.minG, f.maxG);
+        drawFish(ctx, c.result.fish, tip.x, tip.y + len * 0.5, len, t, { angle: -Math.PI / 2 + Math.sin(t * 0.012) * 0.18, speed: 0.8, glow: f.rarity === 'legendary' });
       }
       if (t - c.revealAt > REVEAL_MS) castRef.current = null;
     }
@@ -262,7 +315,8 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
       c.phase = 'reeling';
       c.reelAt = now;
       sfx.reel(REEL_MS / 1000);
-      splash(scene, c.target.x, surfaceY(c.target.x, now), 22);
+      splash(scene, c.target.x, surfaceY(c.target.x, now), 34);
+      scene.shake = Math.max(scene.shake, 2.5);
     } else {
       c.phase = 'escaped';
       c.escapeAt = now;
@@ -282,7 +336,8 @@ export function Fishing({ rod, zone = 'shallows', season = 'calm', disabled, api
       unlock();
       sfx.cast();
       const tx = Math.max(BOAT_X + 140, Math.min(W - 60, point?.x ?? rand(BOAT_X + 260, W - 140)));
-      const next = { phase: 'casting', castAt: now, target: { x: tx, y: SURFACE }, server: null };
+      const look = lookRef.current;
+      const next = { phase: 'casting', castAt: now, target: { x: tx, y: SURFACE }, server: null, approach: pickFish(look.zone, look.season) };
       castRef.current = next;
       try {
         const server = await apiRef.current.cast();
@@ -528,12 +583,58 @@ function drawWater(ctx, t, scene, look) {
 
   drawSeabed(ctx, t, scene, look);
 
-  // ambient fish
+  // the zone's own fish, deeper ones fainter
+  const night = look.stars || look.storm;
   for (const f of scene.ambient) {
-    f.x += f.vx;
-    if (f.x < -40) f.x = W + 40;
-    if (f.x > W + 40) f.x = -40;
-    shadowFish(ctx, f.x, f.y + Math.sin(t * 0.002 + f.phase) * 6, f.size, look.stars ? 0.35 : 0.22, f.vx > 0 ? 1 : -1);
+    // tuna surge now and then; everyone else cruises
+    const surge = f.id === 'tuna' ? 1 + Math.max(0, Math.sin(t * 0.0009 + f.phase)) * 1.4 : 1;
+    f.x += f.vx * surge;
+    if (f.x < -80) f.x = W + 80;
+    if (f.x > W + 80) f.x = -80;
+    const shade = Math.min(0.8, (night ? 0.42 : 0.22) + f.depth * 0.38);
+    const glow = f.id === 'koi' && (look.stars || look.zone === 'reef');
+    drawFish(ctx, f.id, f.x, f.y + Math.sin(t * 0.0018 + f.phase) * 6, f.len, t, { dir: f.vx > 0 ? 1 : -1, shade: glow ? shade * 0.4 : shade, alpha: 0.9, phase: f.phase, speed: surge, glow });
+  }
+  // a school of guppies moving as one
+  if (scene.school) {
+    const sc = scene.school;
+    sc.x += sc.vx;
+    if (sc.x < -120) sc.x = W + 120;
+    if (sc.x > W + 120) sc.x = -120;
+    const wob = Math.sin(t * 0.0013) * 14;
+    for (const m of sc.members) {
+      drawFish(ctx, 'guppy', sc.x + m.dx + Math.sin(t * 0.003 + m.p) * 4, sc.y + m.dy + wob + Math.cos(t * 0.004 + m.p) * 3, 19, t, { dir: sc.vx > 0 ? 1 : -1, shade: night ? 0.45 : 0.25, phase: m.p });
+    }
+  }
+
+  // drifting motes catch the light by day
+  if (!look.stars) {
+    for (const m of scene.motes) {
+      m.y -= m.v; if (m.y < SURFACE + 8) { m.y = H - 8; m.x = rand(0, W); }
+      ctx.fillStyle = `rgba(220,245,240,${0.12 + 0.18 * Math.abs(Math.sin(t * 0.0015 + m.p))})`;
+      ctx.beginPath(); ctx.arc(m.x + Math.sin(t * 0.0008 + m.p) * 5, m.y, m.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  // jellyfish glowing in the deep
+  if (look.bed === 'rock') {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (const j of scene.jellies) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 0.0022 + j.p);
+      j.y -= j.v * (0.4 + pulse); if (j.y < SURFACE + 60) { j.y = H - 60; j.x = rand(60, W - 60); }
+      const jx = j.x + Math.sin(t * 0.0006 + j.p) * 12, r = j.r * (0.9 + 0.12 * pulse);
+      const g = ctx.createRadialGradient(jx, j.y, 1, jx, j.y, r * 2.4);
+      g.addColorStop(0, 'rgba(150,120,255,0.35)'); g.addColorStop(1, 'rgba(150,120,255,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(jx, j.y, r * 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(190,170,255,0.55)';
+      ctx.beginPath(); ctx.ellipse(jx, j.y, r, r * 0.75, 0, Math.PI, 0); ctx.fill();
+      ctx.strokeStyle = 'rgba(190,170,255,0.4)'; ctx.lineWidth = 1;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath(); ctx.moveTo(jx + i * r * 0.35, j.y);
+        for (let k = 1; k <= 5; k++) ctx.lineTo(jx + i * r * 0.35 + Math.sin(t * 0.004 + k + i + j.p) * 3, j.y + k * r * 0.45);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   // bubbles
@@ -577,11 +678,39 @@ function drawSeabed(ctx, t, scene, look) {
   for (const p of scene.bed) ctx.lineTo(p.x, p.y);
   ctx.lineTo(W, H);
   ctx.closePath(); ctx.fill();
+  const bedY = (x) => {
+    const i = Math.max(0, Math.min(scene.bed.length - 2, Math.floor((x + 20) / 40)));
+    const a = scene.bed[i], b = scene.bed[i + 1];
+    return a.y + (b.y - a.y) * ((x - a.x) / (b.x - a.x));
+  };
   if (look.bed === 'sand') {
     ctx.strokeStyle = 'rgba(255,230,190,0.12)'; ctx.lineWidth = 2;
     ctx.beginPath();
     scene.bed.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
     ctx.stroke();
+    // sunlight dancing on the sand
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < Math.ceil(W / 60); i++) {
+      const cx = i * 60 + Math.sin(t * 0.0011 + i * 1.7) * 18, a = 0.05 + 0.05 * Math.sin(t * 0.002 + i);
+      ctx.fillStyle = `rgba(255,240,200,${Math.max(0, a)})`;
+      ctx.beginPath(); ctx.ellipse(cx, bedY(cx) + 8, 16, 3, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    for (const st of scene.stars5) {
+      const y = bedY(st.x) + 4;
+      ctx.save(); ctx.translate(st.x, y); ctx.rotate(st.rot); ctx.fillStyle = st.hue;
+      ctx.beginPath();
+      for (let k = 0; k < 10; k++) { const rr = k % 2 ? st.r * 0.42 : st.r; const a = (k / 10) * Math.PI * 2 - Math.PI / 2; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr * 0.55); }
+      ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    for (const sh of scene.shells) {
+      const y = bedY(sh.x) + 3;
+      ctx.save(); ctx.translate(sh.x, y); ctx.rotate(sh.rot);
+      ctx.fillStyle = '#f2dcc2'; ctx.beginPath(); ctx.arc(0, 0, sh.r, Math.PI, 0); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(160,120,90,0.6)'; ctx.lineWidth = 1;
+      for (let k = -2; k <= 2; k++) { ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.sin(k * 0.55) * sh.r, -Math.cos(k * 0.55) * sh.r); ctx.stroke(); }
+      ctx.restore();
+    }
   }
 
   if (look.bed === 'rock' || look.bed === 'coral') {
@@ -606,6 +735,23 @@ function drawSeabed(ctx, t, scene, look) {
         ctx.stroke();
       }
       ctx.globalAlpha = 1; ctx.lineCap = 'butt';
+    }
+  }
+
+  // anemones wave their arms on the reef
+  if (look.bed === 'coral') {
+    for (const a of scene.anemones) {
+      const y = H - 20;
+      ctx.strokeStyle = a.hue; ctx.lineWidth = 2.4; ctx.lineCap = 'round';
+      for (let k = 0; k < 9; k++) {
+        const ang = -Math.PI + (k / 8) * Math.PI;
+        const sway = Math.sin(t * 0.002 + a.p + k * 0.6) * 0.25;
+        ctx.beginPath(); ctx.moveTo(a.x + Math.cos(ang) * a.r * 0.4, y - 4);
+        ctx.quadraticCurveTo(a.x + Math.cos(ang + sway) * a.r * 0.8, y - 4 + Math.sin(ang) * a.r * 0.6, a.x + Math.cos(ang + sway * 1.6) * a.r, y - 4 + Math.sin(ang + sway) * a.r);
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+      ctx.fillStyle = 'rgba(255,240,250,0.5)'; ctx.beginPath(); ctx.ellipse(a.x, y - 3, a.r * 0.45, 4, 0, 0, Math.PI * 2); ctx.fill();
     }
   }
 
@@ -683,15 +829,18 @@ function drawBoat(ctx, t, c, look) {
   ctx.beginPath(); ctx.moveTo(4, -24); ctx.lineTo(12, -20); ctx.stroke();
   ctx.lineCap = 'butt';
 
-  const tipLocal = { x: 78 - swing * 30, y: -78 + load * 24 + swing * -10 };
+  // The rod bows under a fish and shudders while it is reeled in.
+  const shake = c && c.phase === 'reeling' ? Math.sin(t * 0.07) * 3.5 : c && c.phase === 'bite' ? Math.sin(t * 0.05) * 1.5 : 0;
+  const tipLocal = { x: 78 - swing * 30 - load * 12, y: -78 + load * 34 + swing * -10 + shake };
+  const ctrl = { x: 46 + load * 6, y: -58 + load * 6 };
   ctx.strokeStyle = '#2a1c14';
   ctx.lineWidth = 3.2;
   ctx.beginPath();
   ctx.moveTo(10, -20);
-  ctx.quadraticCurveTo(44, -54 + load * 8, tipLocal.x, tipLocal.y);
+  ctx.quadraticCurveTo(ctrl.x, ctrl.y, tipLocal.x, tipLocal.y);
   ctx.stroke();
   ctx.strokeStyle = '#e5b54a'; ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.moveTo(10, -20); ctx.quadraticCurveTo(44, -54 + load * 8, tipLocal.x, tipLocal.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(10, -20); ctx.quadraticCurveTo(ctrl.x, ctrl.y, tipLocal.x, tipLocal.y); ctx.stroke();
   ctx.restore();
 
   const cos = Math.cos(tilt), sin = Math.sin(tilt);
@@ -720,36 +869,6 @@ function bobber(ctx, p, t, dunk) {
   ctx.beginPath(); ctx.arc(p.x, p.y, 8, Math.PI, 0); ctx.fill();
   ctx.fillStyle = '#123038';
   ctx.fillRect(p.x - 1, p.y - 14, 2, 7);
-}
-
-function shadowFish(ctx, x, y, size, alpha, dir) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = '#04121c';
-  ctx.translate(x, y);
-  ctx.scale(dir, 1);
-  ctx.beginPath(); ctx.ellipse(0, 0, size, size * 0.42, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.moveTo(-size * 0.9, 0); ctx.lineTo(-size * 1.5, -size * 0.4); ctx.lineTo(-size * 1.5, size * 0.4); ctx.closePath(); ctx.fill();
-  ctx.beginPath(); ctx.moveTo(-size * 0.1, -size * 0.38); ctx.lineTo(size * 0.25, -size * 0.75); ctx.lineTo(size * 0.4, -size * 0.32); ctx.closePath(); ctx.fill();
-  ctx.restore();
-}
-
-function fishSprite(ctx, x, y, size, color, t, angle) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.shadowColor = color; ctx.shadowBlur = 16;
-  const body = ctx.createLinearGradient(0, -size * 0.45, 0, size * 0.45);
-  body.addColorStop(0, color); body.addColorStop(1, mix(color.length === 7 ? color : '#94a3b8', '#ffffff', 0.45));
-  ctx.fillStyle = body;
-  ctx.beginPath(); ctx.ellipse(0, 0, size, size * 0.45, 0, 0, Math.PI * 2); ctx.fill();
-  const flap = Math.sin(t * 0.04) * size * 0.2;
-  ctx.fillStyle = color;
-  ctx.beginPath(); ctx.moveTo(-size * 0.85, 0); ctx.lineTo(-size * 1.45, -size * 0.45 + flap); ctx.lineTo(-size * 1.45, size * 0.45 + flap); ctx.closePath(); ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#0f172a';
-  ctx.beginPath(); ctx.arc(size * 0.55, -size * 0.1, Math.max(1.5, size * 0.09), 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
 }
 
 /**
@@ -808,7 +927,7 @@ function drawReveal(ctx, t, c) {
   const y = H / 2 - 30 - ease(k) * 14;
   if (c.result?.hit) {
     const f = FISH[c.result.fish];
-    const tw = 300, th = 108;
+    const tw = 360, th = 112;
     // swing in from a slight tilt, like a tag on a string
     const swing = Math.sin(k * Math.PI * 2.5) * (1 - k) * 0.18;
     ctx.translate(cx, y - th / 2 - 26);
@@ -819,12 +938,17 @@ function drawReveal(ctx, t, c) {
     roundRect(ctx, -tw / 2, 20, tw, th, 10); ctx.fill();
     ctx.fillStyle = f.color; ctx.fillRect(-tw / 2, 20, 10, th);
     ctx.fillStyle = '#0a2e36'; ctx.beginPath(); ctx.arc(0, 34, 6, 0, Math.PI * 2); ctx.fill();
+    // the fish itself, on the left of the tag
+    const art = Math.min(118, SPECIES[c.result.fish].px * 1.45);
+    drawFish(ctx, c.result.fish, -tw / 2 + 80, 20 + th / 2 + 6, art, t, { speed: 0.6 });
+    ctx.textAlign = 'left';
     ctx.fillStyle = '#123038';
     ctx.font = `800 30px ${DISPLAY}`;
-    ctx.fillText(f.name, 0, 76);
+    ctx.fillText(f.name, -tw / 2 + 154, 76);
     ctx.font = `700 15px ${FONT}`;
     ctx.fillStyle = '#3d5a5f';
-    ctx.fillText(`${formatWeight(c.result.weight || 0)}   ${f.rarity}   strike ${Math.round((c.result.quality || 0) * 100)}%`, 0, 104);
+    ctx.fillText(`${formatWeight(c.result.weight || 0)}, ${f.rarity}`, -tw / 2 + 154, 100);
+    ctx.fillText(`strike ${Math.round((c.result.quality || 0) * 100)}%`, -tw / 2 + 154, 120);
   } else {
     ctx.fillStyle = '#ffb08a'; ctx.font = `800 30px ${DISPLAY}`;
     ctx.fillText(LABEL[c.result?.reason] || 'It got away', cx, y);
