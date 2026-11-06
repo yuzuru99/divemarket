@@ -1,0 +1,13 @@
+[workspace]
+members = ["contract"]
+resolver = "2"
+
+# Release profile for the contract wasm. It has to live in the workspace root:
+# cargo ignores profiles in member crates, which once shipped a wasm without
+# overflow checks.
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+panic = "abort"
+overflow-checks = true

@@ -1,0 +1,11 @@
+# build output
+/target
+contract/target
+node_modules/
+app/dist/
+# secrets: the game server's signing key and HMAC secret
+.secrets/
+# local Vercel project link
+.vercel
+# logs
+*.log

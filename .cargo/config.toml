@@ -1,0 +1,6 @@
+# near-sdk 5.30's panic helpers (near-sdk-env) call the NEAR host only when
+# built with `--cfg near`. Without it every require!/panic_str on chain is a
+# bare "unreachable" trap with no message. cargo-near sets this; plain cargo
+# needs it here.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "near"]

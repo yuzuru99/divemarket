@@ -1,0 +1,16 @@
+{
+  "name": "divemarket-bots",
+  "version": "1.0.0",
+  "description": "DiveMarket NPC engine and simulated anglers (Node). The contract is in contract/, the game in app/.",
+  "scripts": {
+    "npc": "node npc/engine.mjs",
+    "sim": "node sim/anglers.mjs",
+    "test": "node npc/test-decide.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "near-api-js": "^7.4.0"
+  },
+  "private": true,
+  "type": "module"
+}
