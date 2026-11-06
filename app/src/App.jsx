@@ -62,6 +62,7 @@ export default function App() {
           ))}
         </nav>
         <div className="who">
+          <span className="net-badge" title="DiveMarket runs on NEAR testnet. Test NEAR has no real value.">Testnet</span>
           {who ? (
             <>
               <span className="addr" title={who}>{who}</span>
@@ -394,6 +395,38 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
   const bid = vaultBidBps(vault);
 
   /**
+   * What "Sell catch" would do right now, in the same order as `settle`:
+   * open NPC orders first (best price first), then the vault at its bid while
+   * it can pay (keeping the same 15% margin), and the rest listed.
+   */
+  const sellPreview = useMemo(() => {
+    const left = { ...haul };
+    const week = Math.floor(Date.now() / (7 * 86_400_000));
+    let total = 0;
+    const toOrders = [];
+    for (const o of [...orders].sort((p, q) => Number(BigInt(q.price) - BigInt(p.price)))) {
+      const n = Math.min(left[o.item_id] || 0, Number(o.units_left));
+      if (n < 1 || Number(o.week) !== week) continue;
+      left[o.item_id] -= n;
+      total += (Number(o.price) / 1e6) * n;
+      toOrders.push(`${n} ${FISH[o.item_id]?.name.toLowerCase() || o.item_id} to ${o.npc_id[0].toUpperCase() + o.npc_id.slice(1)}`);
+    }
+    let budget = (vault * 85n) / 100n;
+    let toVault = 0;
+    let listed = 0;
+    for (const [id, q] of Object.entries(left).sort((x, y) => Number((prices[y[0]] || 0n) - (prices[x[0]] || 0n)))) {
+      if (q < 1) continue;
+      const unitYocto = ((prices[id] || 0n) * BigInt(bid) * 10n ** 24n) / 10_000n / 1_000_000n;
+      const fit = unitYocto > 0n ? Math.min(q, Number(budget / unitYocto)) : 0;
+      budget -= unitYocto * BigInt(fit);
+      toVault += fit;
+      total += (Number(prices[id] || 0n) / 1e6) * (bid / 10_000) * fit;
+      listed += q - fit;
+    }
+    return { total, toOrders, toVault, listed };
+  }, [haul, orders, prices, vault, bid]);
+
+  /**
    * Claim the catch and sell it in one transaction. Whatever the vault can
    * pay for is sold straight to it; the rest is listed for the NPCs to buy
    * with their own treasuries.
@@ -533,11 +566,20 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
             <p className="zone-detail">Bait: {FISH[bait].name} gives {pct(BAIT[bait].rareBonus)} better odds of a rare fish and {pct(BAIT[bait].weightBonus)} more weight. One is used per fish you land.</p>
           )}
 
-          {notes.length > 0 && (() => {
-            // Harbor radio: the newest note from any NPC.
-            const n = [...notes].sort((p, q) => Number(BigInt(q.at_ns) - BigInt(p.at_ns)))[0];
-            return <div className="radio"><NpcNote note={n} name={n.npc_id[0].toUpperCase() + n.npc_id.slice(1)} /></div>;
-          })()}
+          {notes.length > 0 && (
+            // Harbor radio: each NPC's latest note (a new note replaces that
+            // NPC's previous one), newest first.
+            <section className="radio" aria-label="Harbor radio">
+              <h2>Harbor radio <small>the latest word from each NPC</small></h2>
+              <ol className="radio-list">
+                {[...notes].sort((p, q) => Number(BigInt(q.at_ns) - BigInt(p.at_ns))).map((n) => (
+                  <li key={n.npc_id}>
+                    <NpcNote note={n} name={n.npc_id[0].toUpperCase() + n.npc_id.slice(1)} />
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
 
           {!who && (
             <ol className="howto">
@@ -554,7 +596,12 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
             <span className="cooler-count" data-testid="cooler-count">{totalUnits}</span>
           </div>
           <p className="cooler-sub">{totalUnits
-            ? <>The vault would pay about <b className="brass">{(value * bid / 10_000).toFixed(3)} NEAR</b> now. NPC orders often pay more (fair price {value.toFixed(3)}).</>
+            ? <>Selling now pays about <b className="brass">{sellPreview.total.toFixed(3)} NEAR</b>
+                {': '}{[
+                  sellPreview.toOrders.length ? `${sellPreview.toOrders.join(', ')} through NPC orders` : null,
+                  sellPreview.toVault ? `${sellPreview.toVault} to the vault at ${Math.round(bid / 100)}% of fair` : null,
+                  sellPreview.listed ? `${sellPreview.listed} listed for buyers` : null,
+                ].filter(Boolean).join('; ')}. At fair price the catch is worth {value.toFixed(3)}.</>
             : 'Fish you land wait here until you bring them ashore.'}</p>
           {tags.length > 0 && (
             <ul className="tags">
@@ -575,10 +622,25 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
             </ul>
           )}
           <div className="actions">
-            <button className="primary big" onClick={() => (who ? settle(true) : onConnect())} disabled={busy || !totalUnits}>
-              {who ? 'Sell catch' : 'Connect wallet to sell'}
-            </button>
-            <button className="ghost" onClick={() => settle(false)} disabled={busy || !totalUnits || !who}>Keep in inventory</button>
+            {/* Guest fish only come ashore on a rod of the player's own, so a
+                connected player without one is sent to buy it, not to sell. */}
+            {needsFirstRod ? (
+              <button className="primary big" onClick={() => getRod('bamboo', false)} disabled={busy}>
+                Buy Bamboo Rod to sell (0.1 NEAR)
+              </button>
+            ) : (
+              <button className="primary big" onClick={() => (who ? settle(true) : onConnect())} disabled={busy || !totalUnits}>
+                {who ? 'Sell catch' : 'Connect wallet to sell'}
+              </button>
+            )}
+            <button className="ghost" onClick={() => settle(false)} disabled={busy || !totalUnits || !who || needsFirstRod}>Keep in inventory</button>
+          </div>
+          <div className="cooler-help">
+            <p><b>Sell catch</b> brings your fish ashore and sells them in one go: first into NPC orders, which pay
+              the most, then to the vault at {Math.round(bid / 100)}% of fair price. Anything the vault cannot cover
+              is listed for NPCs and other players.</p>
+            <p><b>Keep in inventory</b> only brings them ashore, to use as bait, craft or repair rods, or sell
+              yourself in Market.</p>
           </div>
           {totalUnits > MAX_CLAIM && <p className="muted">Up to {MAX_CLAIM} fish come ashore per transaction.</p>}
           <dl className="ledger">

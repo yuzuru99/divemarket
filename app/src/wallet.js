@@ -11,7 +11,7 @@ import '@near-wallet-selector/modal-ui/styles.css';
 import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
 import { setupHereWallet } from '@near-wallet-selector/here-wallet';
 import { setupMeteorWallet } from '@near-wallet-selector/meteor-wallet';
-import { NETWORK } from './contract';
+import { CONTRACT, NETWORK } from './contract';
 
 let selector = null;
 let modal = null;
@@ -50,8 +50,7 @@ export async function connect() {
 
   if (!modal) {
     modal = setupModal(selector, {
-      contractId: 'dm14.testnet',
-      methodNames: ['catch_fish', 'list_fair', 'buy_from_npc', 'invest'],
+      contractId: CONTRACT,
       theme: 'dark',
       description: 'Connect a wallet to settle your catch on NEAR.',
     });

@@ -77,6 +77,11 @@ main { display: grid; gap: 18px; min-width: 0; }
 .tab-icon { width: 18px; height: 18px; }
 
 .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.net-badge {
+  flex: none; padding: 3px 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+  color: var(--brass); border: 1px solid rgba(229, 181, 74, 0.5); background: rgba(229, 181, 74, 0.1);
+}
 .who .addr {
   color: var(--mist); font-size: 14px; max-width: 220px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -253,6 +258,8 @@ canvas.sea { display: block; width: 100%; user-select: none; -webkit-user-select
   100% { transform: rotate(0); }
 }
 
+.cooler-help { display: grid; gap: 6px; font-size: 13px; line-height: 1.45; color: var(--mist); }
+.cooler-help b { color: var(--foam); }
 .ledger { display: grid; gap: 0; border-top: 1px solid var(--line); padding-top: 6px; }
 .ledger > div { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 14px; }
 .ledger dt { color: var(--mist); }
@@ -450,6 +457,10 @@ table.supply small, table.p2p small { font-size: 12px; }
 .npc-note figcaption b { color: var(--foam); font-size: 13px; }
 .npc-note .src { padding: 2px 8px; border-radius: 999px; background: rgba(230, 242, 239, 0.08); }
 .npc-note .src.near-ai { background: rgba(88, 199, 154, 0.16); color: var(--kelp); }
+.radio { display: grid; gap: 8px; }
+.radio h2 { font: 800 22px/1 var(--display); display: flex; align-items: baseline; gap: 10px; }
+.radio h2 small { font: 400 13px/1 var(--body); color: var(--mist); }
+.radio-list { list-style: none; display: grid; gap: 8px; }
 .radio .npc-note { margin: 0; }
 
 /* ------------------------------------------------------------ even buttons */
@@ -492,4 +503,11 @@ table.prices td.p-ask, table.prices td.p-ord { min-width: 210px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Small phones: the testnet badge and the connect button share one line. */
+@media (max-width: 480px) {
+  .who { gap: 6px; }
+  .who .primary { white-space: nowrap; padding: 9px 14px; font-size: 14px; }
+  .net-badge { padding: 2px 7px; font-size: 11px; }
 }

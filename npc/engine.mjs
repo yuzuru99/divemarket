@@ -152,14 +152,52 @@ async function sendCall(provider, accountId, keyPair, methodName, args, depositY
   });
 }
 
+// ----------------------------------------------------------------- gas
+
+/** Who pays NPC gas top-ups, and the thresholds (in yoctoNEAR). */
+const GAS_FUNDER = process.env.GAS_FUNDER || CONTRACT;
+const GAS_FLOOR = BigInt(Math.round(Number(process.env.GAS_FLOOR_NEAR || 0.3) * 1e6)) * 10n ** 18n;
+const GAS_TOP_UP = BigInt(Math.round(Number(process.env.GAS_TOP_UP_NEAR || 1) * 1e6)) * 10n ** 18n;
+const GAS_FUNDER_FLOOR = BigInt(Math.round(Number(process.env.GAS_FUNDER_FLOOR_NEAR || 3) * 1e6)) * 10n ** 18n;
+const fmtNear = (yocto) => (Number(yocto / 10n ** 21n) / 1000).toFixed(3);
+
+/** An account's liquid balance, in yoctoNEAR. */
+async function accountBalance(accountId) {
+  const res = await fetch(NODE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 'npc-gas', method: 'query',
+      params: { request_type: 'view_account', finality: 'final', account_id: accountId },
+    }),
+  });
+  const json = await res.json();
+  if (json.error || !json.result) throw new Error(json.error?.message || `cannot read ${accountId}`);
+  return BigInt(json.result.amount);
+}
+
+/** Send NEAR with near-cli, signed by the sender's key in the keystore. */
+async function sendNear(from, to, yocto) {
+  const { execFileSync } = await import('node:child_process');
+  const amount = (Number(yocto / 10n ** 18n) / 1e6).toString();
+  return execFileSync('near', ['send', from, to, amount, '--networkId', NETWORK], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, NEAR_TESTNET_RPC: NODE_URL },
+  });
+}
+
 // ----------------------------------------------------------------- tick
 
 /** Week each NPC last posted each weekly order (lost on restart: at worst one repost). */
 const postedWeekly = {};
 
 /** How often each NPC asks NEAR AI Cloud for a new plan, and posts a note. */
-const BRAIN_MS = Number(process.env.BRAIN_MS || 60 * 60_000);
-const NOTE_MS = Number(process.env.NOTE_MS || 50 * 60_000);
+// Each NPC thinks and posts on its own random 30-50 minute rhythm, so the
+// harbor radio does not tick like a clock.
+const GAP_MIN_MS = Number(process.env.GAP_MIN_MS || 30 * 60_000);
+const GAP_MAX_MS = Number(process.env.GAP_MAX_MS || 50 * 60_000);
+const randomGap = () => GAP_MIN_MS + Math.floor(Math.random() * (GAP_MAX_MS - GAP_MIN_MS));
 const BRAIN_RETRY_MS = Number(process.env.BRAIN_RETRY_MS || 10 * 60_000);
 const WEEK_NS = 7n * 86_400n * 1_000_000_000n;
 /** The latest plan per NPC: { at, plan, source }. */
@@ -194,17 +232,17 @@ async function tick(provider, npcId) {
 
   const sold = soldLastWeek(trades, npcId);
 
-  // Brain: once an hour, ask NEAR AI Cloud for this week's plan. Any failure
+  // Brain: every 30-50 minutes, ask NEAR AI Cloud for this week's plan. Any failure
   // (or no API key) leaves the NPC on its rules.
   const b = brains[npcId];
   // After a failed call (no credit yet, a timeout) retry sooner, so the NPC
   // switches to its AI plan soon after the account starts working.
-  const brainDue = b && Date.now() - b.at > (b.plan ? BRAIN_MS : BRAIN_RETRY_MS);
+  const brainDue = b && Date.now() - b.at > (b.plan ? b.gap : BRAIN_RETRY_MS);
   if (!b || brainDue || b.season !== season.name) {
     const fair = Object.fromEntries(items.map((i) => [i.id, Number(fairPriceOf(i)) / 1e6]));
     const treasuryNear = Number(BigInt(npc.treasury) / 10n ** 21n) / 1000;
     const plan = await think(npcId, { npc, season: season.name, sold, fair, treasuryNear });
-    brains[npcId] = { at: Date.now(), season: season.name, plan, source: plan ? 'near-ai' : 'rules' };
+    brains[npcId] = { at: Date.now(), gap: randomGap(), season: season.name, plan, source: plan ? 'near-ai' : 'rules' };
     console.log(`[${npcId}] BRAIN ${plan ? `near-ai ${JSON.stringify(plan.orders)}` : 'rules (no AI plan)'}`);
   }
   const brain = brains[npcId];
@@ -222,14 +260,14 @@ async function tick(provider, npcId) {
     return;
   }
 
-  // A market note on chain, from the NPC's own account, at most hourly.
+  // A market note on chain, from the NPC's own account, every 30-50 minutes.
   const text = (brain.source === 'near-ai' && brain.plan?.note) || rulesNote(npcId, npc, season.name);
   const last = notes[npcId];
-  if (!last || (Date.now() - last.at > NOTE_MS && last.text !== text)) {
+  if (!last || (Date.now() - last.at > last.gap && last.text !== text)) {
     console.log(`[${npcId}] NOTE (${brain.source}) ${text}`);
     await sendCall(provider, `${npcId}.${CONTRACT}`, signerFor(`${npcId}.${CONTRACT}`), 'npc_post_note',
       { npc_id: npcId, text, source: brain.source }, '0');
-    notes[npcId] = { at: Date.now(), text };
+    notes[npcId] = { at: Date.now(), gap: randomGap(), text };
     return;
   }
 
@@ -334,7 +372,32 @@ async function main() {
     } catch (err) { console.error('[vault] sweep failed:', err.message); }
   };
 
+  // Every 10 minutes: an NPC whose own account runs low on gas gets 1 NEAR
+  // from the funder (the contract account by default). Without gas an NPC
+  // silently stops posting orders, notes and sweeps.
+  let lastGasCheck = 0;
+  const topUpGas = async () => {
+    if (Date.now() - lastGasCheck < 10 * 60_000) return;
+    lastGasCheck = Date.now();
+    try {
+      const funderBalance = await accountBalance(GAS_FUNDER);
+      for (const id of npcIds) {
+        const account = `${id}.${CONTRACT}`;
+        const balance = await accountBalance(account);
+        if (balance >= GAS_FLOOR) continue;
+        if (funderBalance < GAS_FUNDER_FLOOR) {
+          console.error(`[gas] ${account} is low (${fmtNear(balance)} NEAR) but ${GAS_FUNDER} is down to ${fmtNear(funderBalance)} NEAR; top it up by hand`);
+          continue;
+        }
+        console.log(`[gas] ${account} has ${fmtNear(balance)} NEAR, sending ${fmtNear(GAS_TOP_UP)} from ${GAS_FUNDER}`);
+        await sendNear(GAS_FUNDER, account, GAS_TOP_UP);
+      }
+    } catch (err) { console.error('[gas] top-up failed:', err.message); }
+  };
+  await topUpGas();
+
   setInterval(async () => {
+    await topUpGas();
     await sweep();
     for (const id of npcIds) {
       try {

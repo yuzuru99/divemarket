@@ -196,7 +196,7 @@ browser (React, app/)          game server (Vercel functions, app/api/)     NEAR
 ```
 contract/            Rust contract (near-sdk 5)
   src/lib.rs         economy, zones, rods, NPCs, orders, tournament, records, crew
-  tests/economy.rs   133 tests
+  tests/economy.rs   134 tests
 app/                 React game + Vercel functions
   src/               game.js (rules shared with the server), Fishing.jsx (scene),
                      Market.jsx, Zones.jsx, Endgame.jsx, App.jsx
@@ -214,7 +214,7 @@ scripts/             deploy.sh (fresh economy), vercel-env.sh (server secrets),
 
 ```bash
 # contract
-cargo test                                   # 133 tests
+cargo test                                   # 134 tests
 cargo build --target wasm32-unknown-unknown --release
 # .cargo/config.toml adds `--cfg near`: without it near-sdk 5.30 compiles every
 # require!/panic into a bare "unreachable" trap and errors lose their message.

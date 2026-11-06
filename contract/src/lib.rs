@@ -235,6 +235,10 @@ pub struct SupplyView {
     pub regen_bps: Option<U128>,
 }
 
+/// How many NPC notes the log keeps; older ones are dropped.
+pub const NOTE_LOG_KEEP: u64 = 50;
+const NOTE_LOG_LEN_KEY: &[u8] = b"note_log_len";
+
 /// Longest market note an NPC may publish.
 pub const MAX_NOTE_CHARS: usize = 240;
 
@@ -358,6 +362,8 @@ pub struct WorldState {
     pub vault: U128,
     pub solvency: Solvency,
     pub notes: Vec<NpcNote>,
+    /// The ten newest notes from any NPC, newest first.
+    pub note_log: Vec<NpcNote>,
     pub supply: Vec<SupplyView>,
 }
 
@@ -526,6 +532,7 @@ enum StorageKey {
     RodWear,
     NpcNotes,
     Burned,
+    NoteLog,
 }
 
 /// How rare an item is. Rarity is not cosmetic: it sets the base price, and
@@ -1882,6 +1889,7 @@ impl Contract {
             vault: U128(self.vault_balance),
             solvency: self.solvency(),
             notes: self.npc_notes(),
+            note_log: self.note_log(Some(10)),
             supply: self.supply(),
         }
     }
@@ -2265,7 +2273,26 @@ impl Contract {
         require!(!text.is_empty(), "empty note");
         require!(text.chars().count() <= MAX_NOTE_CHARS, "note too long");
         require!(source == "near-ai" || source == "rules", "unknown note source");
-        Self::notes_map().insert(&npc_id, &NpcNote { npc_id: npc_id.clone(), text, source, at_ns: env::block_timestamp() });
+        let note = NpcNote { npc_id: npc_id.clone(), text, source, at_ns: env::block_timestamp() };
+        Self::notes_map().insert(&npc_id, &note);
+        // Append to the log, dropping the oldest once it holds NOTE_LOG_KEEP.
+        let n = Self::read_u128(NOTE_LOG_LEN_KEY) as u64;
+        let mut log = Self::note_log_map();
+        log.insert(&n, &note);
+        if n >= NOTE_LOG_KEEP {
+            log.remove(&(n - NOTE_LOG_KEEP));
+        }
+        Self::write_u128(NOTE_LOG_LEN_KEY, (n + 1) as u128);
+    }
+
+    fn note_log_map() -> LookupMap<u64, NpcNote> { LookupMap::new(StorageKey::NoteLog) }
+
+    /// The newest notes from any NPC, newest first (default 10, at most 50).
+    pub fn note_log(&self, limit: Option<u32>) -> Vec<NpcNote> {
+        let limit = (limit.unwrap_or(10) as u64).min(NOTE_LOG_KEEP);
+        let n = Self::read_u128(NOTE_LOG_LEN_KEY) as u64;
+        let log = Self::note_log_map();
+        (n.saturating_sub(limit)..n).rev().filter_map(|i| log.get(&i)).collect()
     }
 
     /// The latest note from each NPC.

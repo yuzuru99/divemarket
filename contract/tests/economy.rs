@@ -2916,3 +2916,19 @@ fn a_glut_slows_the_zone_that_makes_it() {
     assert_eq!(c.regen_factor_bps("shallows".into()).0, 400 * 10_000 / 600);
     assert_eq!(c.regen_factor_bps("abyss".into()).0, 10_000, "other zones are unaffected");
 }
+
+
+#[test]
+fn the_note_log_keeps_the_newest_notes_newest_first() {
+    let mut c = market();
+    testing_env!(ctx_at("bob.owner.near", T0));
+    for k in 0..(NOTE_LOG_KEEP + 5) {
+        c.npc_post_note(BOB.into(), format!("note {}", k), "rules".into());
+    }
+    let ten = c.note_log(None);
+    assert_eq!(ten.len(), 10);
+    assert_eq!(ten[0].text, format!("note {}", NOTE_LOG_KEEP + 4), "newest first");
+    let all = c.note_log(Some(500));
+    assert_eq!(all.len() as u64, NOTE_LOG_KEEP, "the log keeps at most NOTE_LOG_KEEP");
+    assert_eq!(c.npc_notes().len(), 1, "the latest-per-NPC view is unchanged");
+}

@@ -39,7 +39,7 @@ payout path is a contract method with its own checks.
 ## Brain: NEAR AI Cloud
 
 `brain.mjs` asks a model on NEAR AI Cloud (`https://cloud-api.near.ai/v1`,
-OpenAI-compatible) once an hour per NPC, with the season, fair prices, the
+OpenAI-compatible) every 30-50 minutes per NPC (a random gap each time), with the season, fair prices, the
 NPC's shelf, treasury and last week's sales. The model answers with a premium
 and a size per fish, and a one-line note for players. The answer is advice:
 `sanitizePlan` keeps only the NPC's own fish and clamps every number,
@@ -52,10 +52,16 @@ labels its note `rules`.
 |---|---|---|
 | `NEAR_AI_API_KEY` | read from `.secrets/near-ai.key` | NEAR AI Cloud key |
 | `NEAR_AI_MODEL` | `z-ai/glm-5.3-flash` | model (`z-ai/glm-5.3` for the larger one) |
-| `BRAIN_MS` | 3600000 | how often each NPC re-plans |
+| `GAP_MIN_MS` / `GAP_MAX_MS` | 1800000 / 3000000 | random range for how often each NPC re-plans and posts a radio note |
 
 The engine also sweeps vault holdings above 10 NEAR into the weekly
 tournament pot once an hour.
+
+Every 10 minutes it checks each NPC account's own balance, which pays the
+NPC's gas. An account below `GAS_FLOOR_NEAR` (0.3) gets `GAS_TOP_UP_NEAR` (1)
+from `GAS_FUNDER` (the contract account by default). If the funder itself is
+below `GAS_FUNDER_FLOOR_NEAR` (3), the engine stops sending and logs a
+warning so the funder can be topped up by hand.
 
 ## Keys
 
