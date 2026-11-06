@@ -64,7 +64,8 @@ the wall and a 30 kg tuna to their name.
 | Fish the Reef with no guppy | Refused: the Reef needs guppy or better as bait, burned one per fish |
 | Pick **Tilapia** as bait in the Shallows | Optional there: +20% rare odds and +20% weight, one tilapia burned per fish |
 | Rods → **Craft** the Carbon Rod | 12 snapper are burned and the rod is yours |
-| Market → **Sell to vault (N%)** | NEAR arrives at the vault's current bid (75% of fair when its reserve is full); the fair price ticks down (▼) |
+| Market → **Sell to vault (N%)** | NEAR arrives at the vault's current bid for that fish (75% of fair when its reserve is full, a little less for a fish it already bought a lot of today); the fair price ticks down (▼) |
+| Market → **Release to (zone)** | The fish goes back into its zone: the zone restocks by one, the fish leaves circulation, you climb the Conservationists board. No NEAR changes hands |
 | Fish until a rod's bar runs red, then **Repair** | 85% of the NEAR goes to the vault and 15% to this week's tournament pot — or pay in fish instead |
 | Market → **Buy 1** from the cheapest NPC | The NPC's stock drops and its treasury rises |
 | Market → Player listings → **Buy 1** | The fish is yours and the seller is paid directly |
@@ -82,7 +83,7 @@ it live, and the Market page shows it.
 
 | Money in | Money out |
 |---|---|
-| Catch fee + zone licenses (Shallows 0.008, Reef 0.04, Abyss 0.07 per fish, up to 10x as a zone thins) → vault (30% to the harbor master while the zone is healthy) | Vault pays players who sell straight to it at 75% of fair × min(1, vault / 5 NEAR): the bid shrinks as the reserve runs low, so heavy selling can never drain it, and NPC orders stay the better outlet |
+| Catch fee + zone licenses (Shallows 0.008, Reef 0.04, Abyss 0.07 per fish, up to 10x as a zone thins) → vault (30% to the harbor master while the zone is healthy) | Vault pays players who sell straight to it at 75% of fair × min(1, vault / 5 NEAR): the bid shrinks as the reserve runs low, so heavy selling can never drain it, and NPC orders stay the better outlet. A fish the vault already bought a lot of today pays 0.3% less per fish sold, down to 70% of the bid (52.5% of fair), resetting every UTC day: at that floor an angler still clears license, bait and rod wear in every zone |
 | Rod repairs → 85% vault, 15% tournament pot | Vault holdings above 10 NEAR → this week's tournament pot (`sweep_vault_surplus`, anyone may call it) |
 | Rod purchases → vault | NPC treasuries pay players whose listings they buy, and fill orders from escrow |
 | Players buying NPC stock → NPC treasury | Harbor masters and their crews withdraw their license share |
@@ -94,9 +95,15 @@ fair price up; listings, vault sales and NPC stock push it down; the pressure
 fades every hour. No admin, oracle or AI sets a price.
 
 **Sinks** that keep fish scarce: bait burned per baited catch, fish burned to
-craft and repair rods, koi mounted as trophies or released into zones, snapper
-burned for docks, and a daily cap of 80 fish per account (100 with a complete
-Fishdex).
+craft and repair rods, koi mounted as trophies, any fish released back into its
+zone, snapper burned for docks, and a daily cap of 80 fish per account (100
+with a complete Fishdex).
+
+**Scarce zones bite slower, not harder.** Below half health a zone makes you
+wait longer for a bite, up to twice as long when it is nearly empty. The strike
+window and hit chance stay the same, and licenses and rod wear are paid per fish
+landed, so a scarce zone costs time, never skill or NEAR. Releasing fish into
+it, or fishing elsewhere, brings the bites back.
 
 **What a fish costs, and what it pays:** licenses and rod wear take roughly a
 third of a Shallows fish's value, two fifths on the Reef and half in the Abyss
@@ -106,8 +113,9 @@ through NPC orders. Licenses are what refill the vault as people fish.
 
 **Fish supply** is on chain and goes both ways. Fish enter only when someone
 catches one, out of a zone's finite, slowly regrowing population. They leave
-for good as bait, rod crafting and repairs, docks, koi trophies and releases,
-and sales to the vault, which keeps no fish. `supply()` shows caught, burned
+for good as bait, rod crafting and repairs, docks, koi trophies, releases back
+into a zone (`release_fish`, which also restocks it), and sales to the vault,
+which keeps no fish. `supply()` shows caught, burned
 (by sink) and circulating for every fish. Each zone's regrowth follows its
 staple fish: when guppy in circulation passes 400 (tilapia 300 for the Reef,
 tuna 150 for the Abyss), that zone regrows more slowly, down to a quarter of
@@ -135,6 +143,8 @@ NPC investors, never by newly created NEAR.
 | Bait | Tiers: guppy 1 (+10% rare, +10% weight), tilapia 2 (+20%, +20%). `set_zone_bait` sets a zone's minimum: Reef guppy, Abyss tilapia; better bait is always accepted. The bait is part of the signed receipt and burned at claim |
 | Weights & records | Weight is signed with the catch; `personal_best`, `records` |
 | Trophies | `mount_trophy` (−5% license each, max −50%) or `release_koi` (+20 fish to a zone) |
+| Release | `release_fish(zone_id, item_id, units)`: guppy, tilapia, snapper or tuna go back into a zone they live in (up to its room, 100 at a time); the Conservationists board ranks fish restocked |
+| Vault flood | `vault_bid_bps_of(item_id)`, `vault_sold_today(item_id)`, `vault_bids()` (also in `world_state`) |
 | Tournament | `enter_tournament`, `settle_tournament(week)` — anyone can pay out a finished week |
 | Seasons | `current_season` = week number mod 4; the game server and NPCs use the same formula |
 | Docks | `build_dock`: harbor master burns 20 snapper, zone capacity +10% (max 10 docks) |
@@ -196,7 +206,7 @@ browser (React, app/)          game server (Vercel functions, app/api/)     NEAR
 ```
 contract/            Rust contract (near-sdk 5)
   src/lib.rs         economy, zones, rods, NPCs, orders, tournament, records, crew
-  tests/economy.rs   134 tests
+  tests/economy.rs   137 tests
 app/                 React game + Vercel functions
   src/               game.js (rules shared with the server), Fishing.jsx (scene),
                      Market.jsx, Zones.jsx, Endgame.jsx, App.jsx
@@ -214,7 +224,7 @@ scripts/             deploy.sh (fresh economy), vercel-env.sh (server secrets),
 
 ```bash
 # contract
-cargo test                                   # 134 tests
+cargo test                                   # 137 tests
 cargo build --target wasm32-unknown-unknown --release
 # .cargo/config.toml adds `--cfg near`: without it near-sdk 5.30 compiles every
 # require!/panic into a bare "unreachable" trap and errors lose their message.
@@ -226,13 +236,13 @@ bash scripts/deploy.sh my-divemarket.testnet my-funder.testnet
 # NPCs and simulated anglers (repo root: npm install once)
 CONTRACT_ID=my-divemarket.testnet npm run npc
 CONTRACT_ID=my-divemarket.testnet GAME_URL=https://your-game.vercel.app npm run sim
-npm test                                     # 53 NPC tests, offline
+npm test                                     # 55 NPC tests, offline
 # NPC brains: put a NEAR AI Cloud key in .secrets/near-ai.key (or NEAR_AI_API_KEY);
 # NEAR_AI_MODEL picks the model. No key: the NPCs run on rules.
 
 # game
 cd app && npm install
-npx vitest run                               # 17 tests
+npx vitest run                               # 18 tests
 VITE_CONTRACT_ID=my-divemarket.testnet npx vite   # UI; /api needs `vercel dev` or e2e/server.mjs
 ```
 

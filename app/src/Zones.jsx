@@ -2,7 +2,7 @@
  * The sea as a map: one card per zone with its live health and license, and
  * the harbor-master (steward) panel for whoever runs a zone.
  */
-import { ZONES, ROD_BY_TIER, RODS, FISH, SEASONS, zoneOpen, zonePool } from './game';
+import { ZONES, ROD_BY_TIER, RODS, FISH, SEASONS, SCARCE_HEALTH, biteSlowdown, zoneOpen, zonePool } from './game';
 import { yoctoToNear, yoctoToNearFine, nearToYocto, freshAsk } from './contract';
 import { short } from './names';
 
@@ -65,6 +65,10 @@ export function ZonePicker({ zones, zone, setZone, rodTier, held = {}, who, seas
           {list} live here. The license is <b className="brass">{yoctoToNearFine(cur.fee_per_fish)} NEAR</b> a fish
           {meta.bait ? <>, and each fish needs one {FISH[meta.bait].name.toLowerCase()} or better as bait{who && <> (you have {held[meta.bait] || 0})</>}</> : ''}.
           {' '}{cur.zone.steward ? <>Harbor master: {short(cur.zone.steward)}.</> : 'No harbor master yet.'}
+          {Number(cur.health_bps) / 10_000 < SCARCE_HEALTH && (
+            <span className="scarce"> Fish are scarce here, so bites come about {biteSlowdown(Number(cur.health_bps) / 10_000).toFixed(1)}× slower.
+              Try another zone, or release fish here to restock it.</span>
+          )}
         </p>
       )}
       {part !== 'tabs' && anyClosed && (

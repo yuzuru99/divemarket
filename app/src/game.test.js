@@ -5,7 +5,7 @@
  * a player earns. Testing them separately is what keeps the economy honest.
  */
 import { describe, it, expect } from 'vitest';
-import { FISH, RODS, ZONES, weighFish, formatWeight, seasonAt, zonePool, zoneOpen, rollZoneFish as rzf, biteDelay, rollFish, rollFishWith, rollZoneFish, zoneHitChance, hitChance, strikeQuality, strikeHits } from './game';
+import { FISH, RODS, ZONES, weighFish, formatWeight, seasonAt, zonePool, zoneOpen, rollZoneFish as rzf, biteDelay, rollFish, rollFishWith, rollZoneFish, zoneHitChance, biteSlowdown, hitChance, strikeQuality, strikeHits } from './game';
 
 describe('fishing rules', () => {
   it('a bite arrives within a playable window', () => {
@@ -99,8 +99,16 @@ describe('fishing rules', () => {
     }
   });
 
-  it('a thin zone bites less often', () => {
-    expect(zoneHitChance('carbon', 1, 0.1)).toBeLessThan(zoneHitChance('carbon', 1, 1));
+  it('a thin zone keeps the same strike odds', () => {
+    expect(zoneHitChance('carbon', 1, 0.1)).toBe(zoneHitChance('carbon', 1, 1));
+  });
+
+  it('a scarce zone makes you wait longer for a bite, up to twice as long', () => {
+    expect(biteSlowdown(1)).toBe(1);
+    expect(biteSlowdown(0.5)).toBe(1);
+    expect(biteSlowdown(0.25)).toBeCloseTo(1.5);
+    expect(biteSlowdown(0)).toBe(2);
+    expect(biteSlowdown(-1)).toBe(2);
   });
 
   it('every weight stays inside its species range and big fish are rare', () => {

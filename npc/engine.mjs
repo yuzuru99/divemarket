@@ -155,7 +155,9 @@ async function sendCall(provider, accountId, keyPair, methodName, args, depositY
 // ----------------------------------------------------------------- gas
 
 /** Who pays NPC gas top-ups, and the thresholds (in yoctoNEAR). */
-const GAS_FUNDER = process.env.GAS_FUNDER || CONTRACT;
+// Never the contract account: its balance backs the vault, NPC treasuries
+// and stakes, so paying gas from it would make the contract insolvent.
+const GAS_FUNDER = process.env.GAS_FUNDER && process.env.GAS_FUNDER !== CONTRACT ? process.env.GAS_FUNDER : null;
 const GAS_FLOOR = BigInt(Math.round(Number(process.env.GAS_FLOOR_NEAR || 0.3) * 1e6)) * 10n ** 18n;
 const GAS_TOP_UP = BigInt(Math.round(Number(process.env.GAS_TOP_UP_NEAR || 1) * 1e6)) * 10n ** 18n;
 const GAS_FUNDER_FLOOR = BigInt(Math.round(Number(process.env.GAS_FUNDER_FLOOR_NEAR || 3) * 1e6)) * 10n ** 18n;
@@ -377,11 +379,11 @@ async function main() {
   };
 
   // Every 10 minutes: an NPC whose own account runs low on gas gets 1 NEAR
-  // from the funder (the contract account by default). Without gas an NPC
+  // from GAS_FUNDER (a separate account, never the contract). Without gas an NPC
   // silently stops posting orders, notes and sweeps.
   let lastGasCheck = 0;
   const topUpGas = async () => {
-    if (Date.now() - lastGasCheck < 10 * 60_000) return;
+    if (!GAS_FUNDER || Date.now() - lastGasCheck < 10 * 60_000) return;
     lastGasCheck = Date.now();
     try {
       const funderBalance = await accountBalance(GAS_FUNDER);

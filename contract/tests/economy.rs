@@ -59,6 +59,7 @@ fn ctx_pay(predecessor: &str, deposit: u128, ts: u64) -> VMContext {
 }
 
 const T0: u64 = 1_700_000_000_000_000_000;
+const BPS_T: u128 = 10_000;
 const BUYER: &str = "buyer.near";
 
 /// Bob posts an ask and a separate player pays it. This is the only way an
@@ -2166,8 +2167,88 @@ fn releasing_a_koi_restocks_the_zone() {
     c.claim_catches(vec![receipt(PLAYER, "shallows", "koi")]);
     testing_env!(ctx_at(PLAYER, T0));
     assert_eq!(c.release_koi("pond".into()), 10, "restock capped at capacity");
-    assert_eq!(c.releases_of(PLAYER.parse().unwrap()), 1);
+    assert_eq!(c.releases_of(PLAYER.parse().unwrap()), 10, "one point per fish actually restocked");
     assert_eq!(c.holdings(PLAYER.parse().unwrap(), "koi".into()), 0);
+}
+
+#[test]
+fn releasing_fish_restocks_the_zone_and_leaves_circulation() {
+    let mut c = market();
+    signer_on(&mut c);
+    claim(&mut c, PLAYER, "shallows", 5);
+    let me: near_sdk::AccountId = PLAYER.parse().unwrap();
+    let pop = c.get_zone("shallows".into()).unwrap().zone.population;
+    testing_env!(ctx_at(PLAYER, T0));
+    assert_eq!(c.release_fish("shallows".into(), "guppy".into(), 3), pop + 3);
+    assert_eq!(c.holdings(me.clone(), "guppy".into()), 2);
+    assert_eq!(c.releases_of(me.clone()), 3);
+    assert_eq!(c.leaderboards().1[0], (me, 3));
+    let g = c.supply().into_iter().find(|v| v.item_id == "guppy").unwrap();
+    assert_eq!(g.released, 3);
+    assert_eq!(g.circulating, 2, "released fish leave circulation");
+}
+
+#[test]
+fn a_release_must_fit_the_fish_the_zone_and_the_hold() {
+    let mut c = market();
+    signer_on(&mut c);
+    claim(&mut c, PLAYER, "shallows", 5);
+    testing_env!(ctx_at(PLAYER, T0));
+    let fails = |c: &mut Contract, zone: &str, item: &str, n: u64| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { c.release_fish(zone.into(), item.into(), n); })).is_err()
+    };
+    assert!(fails(&mut c, "pond", "guppy", 1), "guppy do not live in the pond");
+    assert!(fails(&mut c, "shallows", "koi", 1), "koi use release_koi");
+    assert!(fails(&mut c, "shallows", "guppy", 0), "nothing to release");
+    assert!(fails(&mut c, "shallows", "guppy", 6), "more than the zone has room for, and more than held");
+    assert!(fails(&mut c, "shallows", "tilapia", 1), "holds no tilapia");
+    assert_eq!(c.holdings(PLAYER.parse().unwrap(), "guppy".into()), 5, "failed releases burn nothing");
+}
+
+#[test]
+fn the_vault_pays_less_for_a_fish_it_bought_a_lot_of_today() {
+    let mut c = market();
+    testing_env!(ctx(OWNER));
+    c.fund_vault(U128(100 * ONE_NEAR));
+    for who in [PLAYER, BUYER] {
+        for _ in 0..6 {
+            testing_env!(ctx(who));
+            let (pk, sig, nonce) = sign_catch(who, "guppy", 10);
+            testing_env!(ctx(OWNER));
+            c.set_game_signer(pk.to_string());
+            testing_env!(ctx(who));
+            c.catch_fish("guppy".into(), 10, nonce, sig.to_string());
+        }
+    }
+    let full = c.vault_bid_bps();
+    assert_eq!(c.vault_bid_bps_of("guppy".into()).0, full, "nothing sold yet today");
+
+    testing_env!(ctx(PLAYER));
+    c.sell_to_market("guppy".into(), 20);
+    assert_eq!(c.vault_sold_today("guppy".into()), 20);
+    assert_eq!(c.vault_bid_bps_of("guppy".into()).0, full * 9_400 / 10_000, "0.3% off per guppy sold today");
+    assert_eq!(c.vault_bid_bps_of("tilapia".into()).0, full, "other fish are not affected");
+    let fair_after = c.fair_price("guppy".into()).0;
+
+    // One sale of 40 is priced at the middle of its own impact: 20 + 20 sold.
+    let before = c.vault_balance().0;
+    c.sell_to_market("guppy".into(), 40);
+    let paid = before - c.vault_balance().0;
+    let fair = c.fair_price("guppy".into()).0;
+    assert!(fair <= fair_after);
+    let unit = fair * full / BPS_T * 8_800 / BPS_T;
+    assert_eq!(paid, unit * 40 * ONE_NEAR / PRICE_SCALE, "priced at 12% off: 20 sold before plus half of this sale");
+
+    // Another 60 takes it past 100 sold: the floor, 70% of the normal bid.
+    testing_env!(ctx(BUYER));
+    c.sell_to_market("guppy".into(), 60);
+    assert_eq!(c.vault_sold_today("guppy".into()), 120);
+    assert_eq!(c.vault_bid_bps_of("guppy".into()).0, full * 7_000 / 10_000, "never below 70% of the normal bid");
+
+    // A new UTC day starts fresh.
+    testing_env!(ctx_at(PLAYER, T0 + 86_400 * 1_000_000_000));
+    assert_eq!(c.vault_sold_today("guppy".into()), 0);
+    assert_eq!(c.vault_bid_bps_of("guppy".into()).0, c.vault_bid_bps());
 }
 
 // ================================================================ tournament

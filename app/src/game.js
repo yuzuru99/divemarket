@@ -60,6 +60,19 @@ export const vaultBidBps = (vault) => {
 export const ROD_BY_TIER = ['bamboo', 'carbon', 'master'];
 
 /**
+ * The vault's flood discount (mirrors the contract): each fish of a kind sold
+ * to the vault today takes 0.3% off its bid for that kind, down to 70% of the
+ * normal bid. Resets every UTC day.
+ */
+export const VAULT_FLOOD_BPS_PER_FISH = 30;
+export const VAULT_FLOOD_FLOOR_BPS = 7_000;
+/** The flood factor (bps) after `extra` more fish, from the current factor. */
+export const floodAfter = (factorBps, extra) => Math.max(VAULT_FLOOD_FLOOR_BPS, factorBps - VAULT_FLOOD_BPS_PER_FISH * extra);
+
+/** Where each fish lives, so a released fish goes home (mirrors the contract). */
+export const FISH_HOMES = { guppy: ['shallows'], tilapia: ['shallows', 'reef'], snapper: ['shallows', 'reef', 'abyss'], tuna: ['reef', 'abyss'] };
+
+/**
  * Bait. A zone needing tier N accepts any bait of tier N or better, and bait
  * is optional in open water. Each fish caught with bait burns one bait fish,
  * so bait is where common fish keep their value at endgame.
@@ -114,9 +127,21 @@ export const zoneOpen = (zoneId, season) => !(season === 'storm' && zoneId === '
 /** Koi only show up in a zone at least this healthy (population / capacity). */
 export const KOI_MIN_HEALTH = 0.6;
 
-/** A thin zone bites less: at 0% health the hit chance is 60% of normal. */
-export function zoneHitChance(rodId, quality, health) {
-  return hitChance(rodId, quality) * (0.6 + 0.4 * Math.max(0, Math.min(1, health)));
+/**
+ * Scarce fish are slow to find, not harder to hook. Below half health the
+ * wait for a bite grows, up to twice as long in an empty zone; the strike
+ * window and the hit chance stay the same, so a scarce zone costs time,
+ * never skill or NEAR (licenses and rod wear are paid per fish landed).
+ */
+export const SCARCE_HEALTH = 0.5;
+export const biteSlowdown = (health) => {
+  const h = Math.max(0, Math.min(1, health));
+  return h >= SCARCE_HEALTH ? 1 : 1 + (SCARCE_HEALTH - h) / SCARCE_HEALTH;
+};
+
+/** The hit chance in a zone. Zone health no longer changes it (see `biteSlowdown`). */
+export function zoneHitChance(rodId, quality) {
+  return hitChance(rodId, quality);
 }
 
 /** Which fish a strike in `zoneId` lands, for a uniform random `r` in [0, 1). */

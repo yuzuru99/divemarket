@@ -118,6 +118,22 @@ const lastBanner = await banner();
 if (/failed/.test(lastBanner)) rec('a failed cancel is explained in plain words', /an NPC probably bought it/.test(lastBanner), lastBanner.slice(0, 100));
 await sleep(4000);
 h0 = await held(fishId);
+
+// ---- release: one fish back into its zone, no NEAR involved
+{
+  const rel = fishRow.getByRole('button', { name: /^Release to / });
+  if (await rel.count()) {
+    const releasedOf = async () => ((await view('supply')).find((v) => v.item_id === fishId) || {}).released || 0;
+    const r0 = await releasedOf();
+    const h1 = await held(fishId);
+    await step(`release 1 ${fishId} into its zone`, () => rel.click(), async () => {
+      const r1 = await releasedOf();
+      return [r1 === r0 + 1 && (await held(fishId)) === h1 - 1, `released ${r0} -> ${r1}, held ${h1} -> ${await held(fishId)}`];
+    });
+    await sleep(4000);
+    h0 = await held(fishId);
+  }
+}
 const vault0 = BigInt(await view('vault_balance'));
 await step(`sell 1 ${fishId} to the vault`, () => yours.locator('tbody tr').first().getByRole('button', { name: 'Sell to vault' }).click(), async () => {
   const v = BigInt(await view('vault_balance'));

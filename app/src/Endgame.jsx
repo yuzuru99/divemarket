@@ -40,7 +40,8 @@ export function TrophyRoom({ who, koi, trophies, discountBps, boards, zones, bus
       <p className="muted">
         A koi is a choice. <b>Mount</b> it and it is gone for good, but every trophy takes 5% off
         your fishing licenses (up to 50%). <b>Release</b> it and it restocks a zone by 20 fish for
-        everyone fishing there.
+        everyone fishing there. Other fish can be released from Market, one fish each. Conservationists
+        are ranked by fish restocked.
       </p>
       <div className="trophy-row">
         <div><span className="k">Koi held</span><span className="v gold">{koi}</span></div>
@@ -56,7 +57,7 @@ export function TrophyRoom({ who, koi, trophies, discountBps, boards, zones, bus
       </div>
       <div className="cols boards">
         <Board title="Trophy hunters" rows={topTrophies} unit="trophies" who={who} />
-        <Board title="Conservationists" rows={topReleases} unit="released" who={who} />
+        <Board title="Conservationists" rows={topReleases} unit="fish restocked" who={who} />
       </div>
     </section>
   );

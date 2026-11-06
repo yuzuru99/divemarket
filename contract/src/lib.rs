@@ -174,6 +174,16 @@ const TOP_N: usize = 10;
 const TROPHY_TOP_KEY: &[u8] = b"top_trophies";
 const RELEASE_TOP_KEY: &[u8] = b"top_releases";
 const TOURNEY_HELD_KEY: &[u8] = b"tourney_held";
+/// Where each fish lives, so a released fish goes home. Koi have their own
+/// release (`release_koi`), which restocks a zone by 20.
+pub const FISH_HOMES: [(&str, &[&str]); 4] = [
+    ("guppy", &["shallows"]),
+    ("tilapia", &["shallows", "reef"]),
+    ("snapper", &["shallows", "reef", "abyss"]),
+    ("tuna", &["reef", "abyss"]),
+];
+/// Most fish one release call puts back.
+pub const MAX_RELEASE: u64 = 100;
 
 // ------------------------------------------- seasons, docks, orders, dex
 
@@ -195,6 +205,15 @@ pub const POACH_FINE_MULTIPLIER: u128 = 3;
 /// The vault buys at a discount to fair: instant cash, but the best price is
 /// always an NPC order or listing.
 pub const VAULT_PRICE_BPS: u128 = 7_500;
+/// A fish the vault already bought a lot of today pays less: each one sold
+/// to the vault today takes 0.3% off the vault's bid for that fish, down to
+/// 70% of the normal bid (52.5% of fair). The floor is set so an angler
+/// still profits in every zone after license, bait and rod wear. The count
+/// resets every UTC day. Fair price, NPC orders and player listings are not
+/// affected.
+pub const VAULT_FLOOD_BPS_PER_FISH: u128 = 30;
+pub const VAULT_FLOOD_FLOOR_BPS: u128 = 7_000;
+pub const DAY_NS: u64 = 86_400 * 1_000_000_000;
 /// The vault pays its full 75% only while it holds at least this much; below
 /// it, the bid shrinks in proportion, so heavy selling can never drain it.
 pub const VAULT_TARGET: u128 = 5 * ONE_NEAR;
@@ -227,6 +246,8 @@ pub struct SupplyView {
     pub minted: u64,
     pub burned_bait: u64,
     pub burned: Burned,
+    /// Fish released back into their zone by players.
+    pub released: u64,
     pub circulating: u64,
     /// Circulation target for this fish, if a zone's regrowth follows it.
     pub target: Option<u64>,
@@ -365,6 +386,9 @@ pub struct WorldState {
     /// The ten newest notes from any NPC, newest first.
     pub note_log: Vec<NpcNote>,
     pub supply: Vec<SupplyView>,
+    /// What the vault pays for each fish right now, in bps of fair price,
+    /// after today's flood discount.
+    pub vault_bids: Vec<(String, U128)>,
 }
 
 /// Everything about one player, in one view call.
@@ -533,6 +557,8 @@ enum StorageKey {
     NpcNotes,
     Burned,
     NoteLog,
+    Released,
+    VaultDay,
 }
 
 /// How rare an item is. Rarity is not cosmetic: it sets the base price, and
@@ -1628,12 +1654,45 @@ impl Contract {
         let mut z = self.load_zone(&zone_id);
         self.burn_one(&me, "koi");
         Self::count_burn("koi", 1, |b, n| b.koi += n);
+        let before = z.population;
         z.population = (z.population + KOI_RELEASE_RESTOCK).min(z.capacity);
         self.save_zone(&z);
-        let n = Self::releases_map().get(&me).unwrap_or(0) + 1;
-        Self::releases_map().insert(&me, &n);
-        Self::bump_top(RELEASE_TOP_KEY, &me, n);
+        self.credit_release(&me, z.population - before);
         z.population
+    }
+
+    /// Release fish from your hold back into a zone they live in. Each fish
+    /// adds one to the zone and leaves circulation for good. Nothing is paid:
+    /// it is how anglers restock a scarce zone, and it counts toward the
+    /// Conservationists board (one point per fish restocked).
+    pub fn release_fish(&mut self, zone_id: String, item_id: String, units: u64) -> u64 {
+        let me = env::predecessor_account_id();
+        require!(units > 0 && units <= MAX_RELEASE, "release between 1 and 100 fish at a time");
+        let homes = FISH_HOMES.iter().find(|(f, _)| *f == item_id).map(|(_, z)| *z);
+        let homes = match homes {
+            Some(h) => h,
+            None => env::panic_str("only guppy, tilapia, snapper and tuna can be released this way"),
+        };
+        require!(homes.contains(&zone_id.as_str()), "that fish does not live in this zone");
+        let mut z = self.load_zone(&zone_id);
+        let room = z.capacity.saturating_sub(z.population);
+        if room < units {
+            env::panic_str(&format!("this zone only has room for {} more fish", room));
+        }
+        self.burn_n(&me, &item_id, units, "you do not hold that many of this fish");
+        let mut m = Self::released_map();
+        m.insert(&item_id, &(m.get(&item_id).unwrap_or(0) + units));
+        z.population += units;
+        self.save_zone(&z);
+        self.credit_release(&me, units);
+        env::log_str(&format!("RELEASE: {} put {} {} back into {}", me, units, item_id, zone_id));
+        z.population
+    }
+
+    fn credit_release(&mut self, who: &AccountId, fish: u64) {
+        let n = Self::releases_map().get(who).unwrap_or(0) + fish;
+        Self::releases_map().insert(who, &n);
+        Self::bump_top(RELEASE_TOP_KEY, who, n);
     }
 
     pub fn trophies_of(&self, player: AccountId) -> u64 {
@@ -1891,6 +1950,7 @@ impl Contract {
             notes: self.npc_notes(),
             note_log: self.note_log(Some(10)),
             supply: self.supply(),
+            vault_bids: self.vault_bids(),
         }
     }
 
@@ -2302,6 +2362,7 @@ impl Contract {
     }
 
     fn burned_map() -> LookupMap<String, Burned> { LookupMap::new(StorageKey::Burned) }
+    fn released_map() -> LookupMap<String, u64> { LookupMap::new(StorageKey::Released) }
 
     fn count_burn(item: &str, n: u64, f: impl Fn(&mut Burned, u64)) {
         let mut m = Self::burned_map();
@@ -2315,7 +2376,8 @@ impl Contract {
         let minted = self.items.get(&item.to_string()).map(|i| i.total_minted).unwrap_or(0);
         let b = Self::burned_map().get(&item.to_string()).unwrap_or_default();
         let bait = Self::bait_burned_map().get(&item.to_string()).unwrap_or(0);
-        minted.saturating_sub(bait + b.rods + b.vault + b.docks + b.koi)
+        let released = Self::released_map().get(&item.to_string()).unwrap_or(0);
+        minted.saturating_sub(bait + b.rods + b.vault + b.docks + b.koi + released)
     }
 
     /// How fast a zone regrows right now, in bps of its normal rate: full
@@ -2348,6 +2410,7 @@ impl Contract {
                     minted: self.items.get(&id).map(|i| i.total_minted).unwrap_or(0),
                     burned_bait: Self::bait_burned_map().get(&id).unwrap_or(0),
                     burned: Self::burned_map().get(&id).unwrap_or_default(),
+                    released: Self::released_map().get(&id).unwrap_or(0),
                     circulating: self.circulating(&id),
                     target: t.map(|(_, _, n)| *n),
                     zone: t.map(|(z, _, _)| z.to_string()),
@@ -2409,9 +2472,36 @@ impl Contract {
         let _ = Promise::new(listing.seller).transfer(NearToken::from_yoctonear(cost));
     }
 
-    /// What the vault pays right now, in basis points of fair price.
+    /// What the vault pays right now, in basis points of fair price, before
+    /// the per-fish flood discount (see `vault_bid_bps_of`).
     pub fn vault_bid_bps(&self) -> u128 {
         VAULT_PRICE_BPS * self.vault_balance.min(VAULT_TARGET) / VAULT_TARGET
+    }
+
+    fn vault_day_map() -> LookupMap<String, (u64, u64)> { LookupMap::new(StorageKey::VaultDay) }
+
+    /// Units of a fish sold to the vault so far today (UTC).
+    pub fn vault_sold_today(&self, item_id: String) -> u64 {
+        let today = env::block_timestamp() / DAY_NS;
+        match Self::vault_day_map().get(&item_id) {
+            Some((day, n)) if day == today => n,
+            _ => 0,
+        }
+    }
+
+    fn flood_bps(sold_today: u64) -> u128 {
+        BPS.saturating_sub(sold_today as u128 * VAULT_FLOOD_BPS_PER_FISH).max(VAULT_FLOOD_FLOOR_BPS)
+    }
+
+    /// What the vault pays for one more of this fish right now, in bps of fair.
+    pub fn vault_bid_bps_of(&self, item_id: String) -> U128 {
+        let sold = self.vault_sold_today(item_id);
+        U128(self.vault_bid_bps() * Self::flood_bps(sold) / BPS)
+    }
+
+    /// `vault_bid_bps_of` for every fish.
+    pub fn vault_bids(&self) -> Vec<(String, U128)> {
+        self.items.keys().map(|id| (id.clone(), self.vault_bid_bps_of(id))).collect()
     }
 
     /// Set a zone's base license fee. Owner-only.
@@ -2551,7 +2641,11 @@ impl Contract {
         item.vault_intake = item.vault_intake.saturating_add(units);
         let npc_stock = self.npc_inventory_of(item_id.clone());
         let fair = item.fair_price(npc_stock);
-        let price = fair * self.vault_bid_bps() / BPS;
+        // Today's flood discount, priced at the middle of this sale so one
+        // big sale and the same fish sold one by one pay about the same.
+        let sold_today = self.vault_sold_today(item_id.clone());
+        let flood = Self::flood_bps(sold_today + units / 2);
+        let price = fair * self.vault_bid_bps() / BPS * flood / BPS;
         require!(price > 0, "the vault is empty and is not buying");
         let cost = price * units as u128 * ONE_NEAR / PRICE_SCALE;
 
@@ -2564,6 +2658,7 @@ impl Contract {
         self.vault_balance -= cost;
         // The vault does not keep fish: what it buys leaves circulation.
         Self::count_burn(&item_id, units, |b, n| b.vault += n);
+        Self::vault_day_map().insert(&item_id, &(env::block_timestamp() / DAY_NS, sold_today + units));
 
         let key = (player.clone(), item_id.clone());
         self.player_holdings.insert(&key, &(held - units));

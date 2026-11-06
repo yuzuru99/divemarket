@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { connect, disconnect, restoreSession, onAccountChange, getWallet } from './wallet';
 import { view, call, callMany, post, txHash, CONTRACT, yoctoToNear, nearToYocto, explain } from './contract';
-import { BAIT, FISH, RODS, ROD_IDS, ZONES, baitTier, formatWeight, vaultBidBps, wearOf } from './game';
+import { BAIT, FISH, RODS, ROD_IDS, ZONES, baitTier, floodAfter, formatWeight, vaultBidBps, wearOf } from './game';
 import { ZonePicker, StewardPanel, BaitShop } from './Zones';
 import { RecordsPanel, TrophyRoom, TournamentPanel, SeasonBanner, FishdexPanel } from './Endgame';
 import { Fishing } from './Fishing';
@@ -160,6 +160,8 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
   const [escaped, setEscaped] = useState(0);
   const [prices, setPrices] = useState({});
   const [vault, setVault] = useState(0n);
+  // The vault's bid per fish after today's flood discount, in bps of fair.
+  const [vaultBids, setVaultBids] = useState({});
   const [left, setLeft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [zones, setZones] = useState([]);
@@ -223,6 +225,7 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
       ]);
       setPrices(Object.fromEntries(w.items.map((i) => [i.id, BigInt(i.fair_price)])));
       setVault(BigInt(w.vault));
+      setVaultBids(Object.fromEntries((w.vault_bids || []).map(([id, b]) => [id, Number(b)])));
       setZones(w.zones);
       setNpcs(w.npcs);
       setOrders(w.orders || []);
@@ -414,17 +417,26 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
     let budget = (vault * 85n) / 100n;
     let toVault = 0;
     let listed = 0;
+    let vaultPaid = 0;
+    let vaultFair = 0;
     for (const [id, q] of Object.entries(left).sort((x, y) => Number((prices[y[0]] || 0n) - (prices[x[0]] || 0n)))) {
       if (q < 1) continue;
-      const unitYocto = ((prices[id] || 0n) * BigInt(bid) * 10n ** 24n) / 10_000n / 1_000_000n;
+      // Today's flood discount for this fish, priced at the middle of this sale like the contract.
+      const factor = bid > 0 && vaultBids[id] !== undefined ? (vaultBids[id] * 10_000) / bid : 10_000;
+      const bidOf = Math.round((bid * floodAfter(factor, Math.floor(q / 2))) / 10_000);
+      const unitYocto = ((prices[id] || 0n) * BigInt(bidOf) * 10n ** 24n) / 10_000n / 1_000_000n;
       const fit = unitYocto > 0n ? Math.min(q, Number(budget / unitYocto)) : 0;
       budget -= unitYocto * BigInt(fit);
       toVault += fit;
-      total += (Number(prices[id] || 0n) / 1e6) * (bid / 10_000) * fit;
+      const fair = (Number(prices[id] || 0n) / 1e6) * fit;
+      vaultFair += fair;
+      vaultPaid += fair * (bidOf / 10_000);
       listed += q - fit;
     }
-    return { total, toOrders, toVault, listed };
-  }, [haul, orders, prices, vault, bid]);
+    total += vaultPaid;
+    const vaultPct = vaultFair > 0 ? Math.round((vaultPaid / vaultFair) * 100) : Math.round(bid / 100);
+    return { total, toOrders, toVault, listed, vaultPct };
+  }, [haul, orders, prices, vault, bid, vaultBids]);
 
   /**
    * Claim the catch and sell it in one transaction. Whatever the vault can
@@ -599,7 +611,7 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
             ? <>Selling now pays about <b className="brass">{sellPreview.total.toFixed(3)} NEAR</b>
                 {': '}{[
                   sellPreview.toOrders.length ? `${sellPreview.toOrders.join(', ')} through NPC orders` : null,
-                  sellPreview.toVault ? `${sellPreview.toVault} to the vault at ${Math.round(bid / 100)}% of fair` : null,
+                  sellPreview.toVault ? `${sellPreview.toVault} to the vault at ${sellPreview.vaultPct}% of fair` : null,
                   sellPreview.listed ? `${sellPreview.listed} listed for buyers` : null,
                 ].filter(Boolean).join('; ')}. At fair price the catch is worth {value.toFixed(3)}.</>
             : 'Fish you land wait here until you bring them ashore.'}</p>
@@ -637,8 +649,8 @@ function Game({ who, setStatus, onConnect, season, tab, setTab }) {
           </div>
           <div className="cooler-help">
             <p><b>Sell catch</b> brings your fish ashore and sells them in one go: first into NPC orders, which pay
-              the most, then to the vault at {Math.round(bid / 100)}% of fair price. Anything the vault cannot cover
-              is listed for NPCs and other players.</p>
+              the most, then to the vault at up to {Math.round(bid / 100)}% of fair price (a little less for a fish it
+              already bought a lot of today). Anything the vault cannot cover is listed for NPCs and other players.</p>
             <p><b>Keep in inventory</b> only brings them ashore, to use as bait, craft or repair rods, or sell
               yourself in Market.</p>
           </div>

@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { view, call, callMany, txHash, toNear, yoctoToNear, nearToYocto, explain, freshAsk } from './contract';
 import { getWallet } from './wallet';
-import { FISH, vaultBidBps } from './game';
+import { FISH, FISH_HOMES, ZONES, vaultBidBps } from './game';
 import { short } from './names';
 
 const NPC_INFO = {
@@ -86,6 +86,8 @@ export function Market({ who, setStatus }) {
   const [notes, setNotes] = useState([]);
   const [stakes, setStakes] = useState({});
   const [supply, setSupply] = useState([]);
+  const [vaultBids, setVaultBids] = useState({});
+  const [zones, setZones] = useState([]);
   const [held, setHeld] = useState({});
   const [qty, setQty] = useState({});
   const [busy, setBusy] = useState(false);
@@ -108,6 +110,7 @@ export function Market({ who, setStatus }) {
       }
       setFlash(changed);
       setItems(w.items); setNpcs(w.npcs); setTrades(w.trades); setOrders(w.orders); setListings(w.listings); setSolvency(w.solvency); setNotes(w.notes || []); setSupply(w.supply || []);
+      setVaultBids(Object.fromEntries((w.vault_bids || []).map(([id, b]) => [id, Number(b)]))); setZones(w.zones || []);
       if (p) setHeld(Object.fromEntries(p.holdings.map(([i, n]) => [i, Number(n)])));
       if (who) {
         const ids = w.npcs.map((n) => n.id);
@@ -304,8 +307,24 @@ export function Market({ who, setStatus }) {
                           onChange={(e) => setQty({ ...qty, [i.id]: e.target.value })} className="qty" />
                       </td>
                       <td className="steward-actions">
-                        <button className="ghost sm" disabled={busy} onClick={() => run(`sell ${q(i.id)} ${i.id} to the vault`, 'sell_to_market', { item_id: i.id, units: Math.min(q(i.id), held[i.id]) })} title="The vault always buys: 75% of fair while it holds 5 NEAR, less as it runs low. NPC orders and listings usually pay more.">Sell to vault ({Math.round(vaultBidBps(solvency?.vault) / 100)}%)</button>
+                        <button className="ghost sm" disabled={busy} onClick={() => run(`sell ${q(i.id)} ${i.id} to the vault`, 'sell_to_market', { item_id: i.id, units: Math.min(q(i.id), held[i.id]) })} title="The vault always buys: 75% of fair while it holds 5 NEAR, less as it runs low, and less for a fish it already bought a lot of today (down to 70% of its bid). NPC orders and listings usually pay more.">Sell to vault ({Math.round((vaultBids[i.id] ?? vaultBidBps(solvency?.vault)) / 100)}%)</button>
                         <button className="ghost sm" disabled={busy} onClick={() => run(`list ${q(i.id)} ${i.id}`, 'list_fair', { item_id: i.id, units: Math.min(q(i.id), held[i.id]) })}>List for NPCs</button>
+                        {(() => {
+                          // Release goes to the home zone that needs it most (lowest health) and has room.
+                          const homes = (FISH_HOMES[i.id] || []).map((z) => zones.find((v) => v.zone.id === z)).filter(Boolean)
+                            .filter((v) => v.zone.capacity > v.zone.population)
+                            .sort((a, b) => Number(a.health_bps) - Number(b.health_bps));
+                          if (!homes.length) return null;
+                          const z = homes[0].zone;
+                          const n = Math.min(q(i.id), held[i.id], z.capacity - z.population, 100);
+                          return (
+                            <button className="ghost sm" disabled={busy}
+                              title={`Put them back into ${ZONES[z.id]?.name || z.id} (${z.population} of ${z.capacity} fish). No NEAR changes hands: the zone restocks and you climb the Conservationists board.`}
+                              onClick={() => run(`release ${n} ${i.id} into ${ZONES[z.id]?.name || z.id}`, 'release_fish', { zone_id: z.id, item_id: i.id, units: n })}>
+                              Release to {ZONES[z.id]?.name || z.id}
+                            </button>
+                          );
+                        })()}
                       </td>
                     </tr>
                   ))}
@@ -498,15 +517,15 @@ function SupplyPanel({ supply }) {
     <section className="panel">
       <h2>Fish supply</h2>
       <p className="muted">Fish only enter the game when someone catches one, and leave for good as bait, rod crafting and
-        repairs, docks, koi trophies, or sales to the vault. When a zone's staple fish piles up past its target, that zone
+        repairs, docks, koi trophies, sales to the vault, or when anglers release them back into a zone. When a zone's staple fish piles up past its target, that zone
         regrows more slowly until the glut clears.</p>
       <table className="supply">
         <thead><tr><th>Fish</th><th className="num">Caught</th><th className="num">Burned</th><th className="num">In circulation</th><th>Zone regrowth</th></tr></thead>
         <tbody>
           {supply.map((s) => {
             const b = s.burned;
-            const burned = s.burned_bait + b.rods + b.vault + b.docks + b.koi;
-            const parts = [['bait', s.burned_bait], ['rods', b.rods], ['vault', b.vault], ['docks', b.docks], ['koi', b.koi]].filter(([, n]) => n > 0);
+            const burned = s.burned_bait + b.rods + b.vault + b.docks + b.koi + (s.released || 0);
+            const parts = [['bait', s.burned_bait], ['rods', b.rods], ['vault', b.vault], ['docks', b.docks], ['koi', b.koi], ['released', s.released || 0]].filter(([, n]) => n > 0);
             const regen = s.regen_bps ? Number(s.regen_bps) / 100 : null;
             return (
               <tr key={s.item_id}>

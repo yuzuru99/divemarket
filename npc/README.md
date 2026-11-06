@@ -59,7 +59,9 @@ tournament pot once an hour.
 
 Every 10 minutes it checks each NPC account's own balance, which pays the
 NPC's gas. An account below `GAS_FLOOR_NEAR` (0.3) gets `GAS_TOP_UP_NEAR` (1)
-from `GAS_FUNDER` (the contract account by default). If the funder itself is
+from `GAS_FUNDER` (`scripts/run-bots.sh` uses divemarket5.testnet). It is
+never the contract account, whose balance backs the vault and treasuries;
+without `GAS_FUNDER` there are no top-ups. If the funder itself is
 below `GAS_FUNDER_FLOOR_NEAR` (3), the engine stops sending and logs a
 warning so the funder can be topped up by hand.
 
@@ -78,7 +80,7 @@ can only trade within the limits above.
 | `decide.mjs` | Pure decisions: `decide` (buy / ask / hold, with the shop margin) and `planOrders` (which standing and weekly orders to post). No network, no keys. |
 | `engine.mjs` | Reads views, calls `decide` / `planOrders`, signs and sends one action per NPC per tick. |
 | `brain.mjs` | NEAR AI Cloud planning: prompt, call, `sanitizePlan`, and the rule fallback note. |
-| `test-decide.mjs` | 51 offline assertions: pricing, personalities, reserve, roles, orders, shelf caps, margin decay, AI parsing. |
+| `test-decide.mjs` | 55 offline assertions: pricing, personalities, reserve, roles, orders, shelf caps, margin decay, FIFO-safe shelf prices, AI parsing. |
 
 ## Run
 

@@ -43,7 +43,7 @@ export default async function handler(req, res) {
   // Poaching: an undisturbed closed zone bites better, but the warden
   // chases off three poachers in ten.
   if (poach && rWarden < WARDEN_CHANCE) return send(res, 200, { hit: false, reason: 'warden', quality });
-  const chance = Math.min(0.95, zoneHitChance(rod, quality, h) + (poach ? POACH_BITE_BONUS : 0));
+  const chance = Math.min(0.95, zoneHitChance(rod, quality) + (poach ? POACH_BITE_BONUS : 0));
   if (rHit >= chance) return send(res, 200, { hit: false, reason: 'escaped', quality });
 
   const fish = rollZoneFish(zone, rod, quality, h, rFish, season, bait);

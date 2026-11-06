@@ -7,7 +7,7 @@
  */
 import crypto from 'node:crypto';
 import { ACCOUNT_RE, GUEST, hmac, readBody, send, view } from './_lib.js';
-import { BAIT, BITE_MIN_MS, BITE_SPAN_MS, RODS, ROD_BY_TIER, ZONES, SEASONS, baitTier, seasonAt, zoneOpen } from '../src/game.js';
+import { BAIT, BITE_MIN_MS, BITE_SPAN_MS, biteSlowdown, RODS, ROD_BY_TIER, ZONES, SEASONS, baitTier, seasonAt, zoneOpen } from '../src/game.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
@@ -78,7 +78,9 @@ export default async function handler(req, res) {
   // 48-bit nonce: unique per cast, safe as a JS number and a u64.
   const castId = crypto.randomBytes(6).readUIntBE(0, 6);
   const issuedAt = Date.now();
-  const biteDelay = Math.round(BITE_MIN_MS + Math.random() * BITE_SPAN_MS);
+  // A scarce zone (below half health) bites less often: the wait stretches,
+  // up to twice as long when the zone is nearly empty.
+  const biteDelay = Math.round((BITE_MIN_MS + Math.random() * BITE_SPAN_MS) * biteSlowdown(health / 10_000));
   const token = hmac(`${player}|${castId}|${rod}|${zone}|${health}|${season}|${poach ? 1 : 0}|${bait || ''}|${issuedAt}|${biteDelay}`);
 
   return send(res, 200, { castId, rod, bait, zone, health, season, poach, issuedAt, biteDelay, windowMs: RODS[rod].windowMs, token });
