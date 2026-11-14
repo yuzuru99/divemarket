@@ -10,7 +10,7 @@ Agent Economy.
 - **Demo video:** https://x.com/agungkzn/status/2118582497793691861
 - **AI agents:** the NPC shopkeepers plan with NEAR AI Cloud and publish their reasoning on chain
 - **Contract:** [`dm21.testnet`](https://testnet.nearblocks.io/address/dm21.testnet)
-- **NPC accounts:** `bob.dm21.testnet`, `alice.dm21.testnet`, `john.dm21.testnet`
+- **NPC accounts:** [`bob.dm21.testnet`](https://testnet.nearblocks.io/address/bob.dm21.testnet), [`alice.dm21.testnet`](https://testnet.nearblocks.io/address/alice.dm21.testnet), [`john.dm21.testnet`](https://testnet.nearblocks.io/address/john.dm21.testnet). Their latest NEAR AI notes: `near view dm21.testnet npc_notes '{}'`
 
 ---
 
@@ -58,8 +58,8 @@ the wall and a 30 kg tuna to their name.
 | Do | See |
 |---|---|
 | Open the game, click the water, click again when the bobber dunks | A fish with a weight lands in your cooler (as a guest, kept in the browser) |
-| Click too early | "Too early — you spooked it" |
-| Connect a testnet wallet, then **Buy Bamboo Rod · 0.1 NEAR** | Your guest catch moves to your account |
+| Click too early | "Too early. You spooked it" |
+| Connect a testnet wallet, then **Buy Bamboo Rod for 0.1 NEAR** | Your guest catch moves to your account |
 | **Keep in inventory** | One transaction claims every fish; `holdings` rises on chain |
 | Pick **Coral Reef** without a tier-1 rod | The card is locked: rods are bought or crafted on chain (`acquire_rod`) |
 | Fish the Reef with no guppy | Refused: the Reef needs guppy or better as bait, burned one per fish |
@@ -151,7 +151,7 @@ NPC investors, never by newly created NEAR.
 | Seasons | `current_season` = week number mod 4; the game server and NPCs use the same formula |
 | Docks | `build_dock`: harbor master burns 20 snapper, zone capacity +10% (max 10 docks) |
 | Player market | `list_fair` puts fish up for 30 minutes; `buy_listing(index, units, max_price)` lets another player buy them, paid straight to the seller; NPCs buy from the same listings when the price suits them |
-| Supply | `supply()`: caught, burned (bait, rods, vault, docks, koi) and circulating per fish; `regen_factor_bps(zone)` |
+| Supply | `supply()`: caught, burned (bait, rods, vault, docks, koi, released) and circulating per fish; `regen_factor_bps(zone)` |
 | NPC notes | `npc_post_note(npc_id, text, source)` from the NPC's own account (source `near-ai` or `rules`); `npc_notes`, and `world_state.notes` |
 | NPC orders | One per NPC per fish, up to 4 each. `npc_post_order` locks escrow; `fill_order(npc_id, item_id, units)` pays from it; `expire_order` returns it |
 | Fishdex | Land all 5 species once: +20 daily catches (100 instead of 80), permanently |

@@ -88,9 +88,9 @@ export function StewardPanel({ zones, who, run, docks = {}, snapper = 0, crews =
       <h2>Harbor masters</h2>
       <p className="muted">
         Join a harbor master's crew to share its earnings by stake, refunded in full when it
-        leaves. Stake NEAR to run a zone and earn 30% of its fishing licenses. Burn 20 snapper to build a
-        dock (+10% capacity, up to 10 docks) — but only while the zone
-        stays above 50% health. Overfish it and the share goes to the vault instead. Close a zone
+        leaves. Stake NEAR to run a zone and earn 30% of its fishing licenses, but only while the zone
+        stays above 50% health. Overfish it and the share goes to the vault instead. Burn 20 snapper
+        to build a dock (+10% capacity, up to 10 docks). Close a zone
         to let it regrow twice as fast. A challenger can take your zone by staking 20% more; you
         get your stake and earnings back.
       </p>
