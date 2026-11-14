@@ -4,9 +4,10 @@
 with real treasuries, and an endgame where players run the fishing zones.**
 
 Built at NEAR HACKATHON — tracks: **Games With Real Economies** (primary),
-Agent Economy, Social Money.
+Agent Economy.
 
 - **Play:** https://dist-swart-nu-14.vercel.app (NEAR testnet; no wallet needed to start fishing)
+- **Demo video:** https://x.com/agungkzn/status/2118582497793691861
 - **AI agents:** the NPC shopkeepers plan with NEAR AI Cloud and publish their reasoning on chain
 - **Contract:** [`dm21.testnet`](https://testnet.nearblocks.io/address/dm21.testnet)
 - **NPC accounts:** `bob.dm21.testnet`, `alice.dm21.testnet`, `john.dm21.testnet`
